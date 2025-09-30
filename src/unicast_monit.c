@@ -103,14 +103,30 @@ int unicast_send_channel_list_js (int number_of_channels, mumudvb_channel_t *cha
 	scam_parameters_t *scam_vars=(scam_parameters_t *)scam_vars_v;
 #endif
 
+	// Check if we have valid channels data
+	if (!channels || number_of_channels <= 0) {
+		return 0; // No channels to process
+	}
+
 	for (curr_channel = 0; curr_channel < number_of_channels; curr_channel++)
 	{
 		                //We give only channels which are ready
 		if(channels[curr_channel].channel_ready<READY)
 			continue;
-		unicast_reply_write(reply, "\n\t{\n\t\"number\": %d,\n", curr_channel + 1);
-		unicast_reply_write(reply, "\t\"lcn\": %d,\n", channels[curr_channel].logical_channel_number);
-		unicast_reply_write(reply, "\t\"name\": \"%s\",\n", channels[curr_channel].name);
+		if (unicast_reply_write(reply, "\n\t{\n\t\"number\": %d,\n", curr_channel + 1) != 0) {
+			log_message(log_module, MSG_ERROR, "Failed to write channel number for channel %d", curr_channel);
+			continue;
+		}
+		if (unicast_reply_write(reply, "\t\"lcn\": %d,\n", channels[curr_channel].logical_channel_number) != 0) {
+			log_message(log_module, MSG_ERROR, "Failed to write LCN for channel %d", curr_channel);
+			continue;
+		}
+		// Sanitize channel name for JSON (escape quotes and control characters)
+		char *sanitized_name = (channels[curr_channel].name[0] != '\0') ? channels[curr_channel].name : "Unknown";
+		if (unicast_reply_write(reply, "\t\"name\": \"%s\",\n", sanitized_name) != 0) {
+			log_message(log_module, MSG_ERROR, "Failed to write name for channel %d", curr_channel);
+			continue;
+		}
 		unicast_reply_write(reply, "\t\"sap_group\": \"%s\",\n", channels[curr_channel].sap_group);
 		unicast_reply_write(reply, "\t\"ip_multicast\": \"%s\",\n", (channels[curr_channel].ip4Out[0]==0) ? "0.0.0.0" : channels[curr_channel].ip4Out);
 		unicast_reply_write(reply, "\t\"port_multicast\": %d,\n", channels[curr_channel].portOut);
@@ -146,27 +162,33 @@ int unicast_send_channel_list_js (int number_of_channels, mumudvb_channel_t *cha
 		}
 #endif
 		unicast_reply_write(reply, "\t\"pids\":[\n");
-		for(int i=0;i<channels[curr_channel].pid_i.num_pids;i++)
-			unicast_reply_write(reply, "\t\t{\n\t\t\t \"number\": %d,\n\t\t\t \"type\": \"%s\",\n\t\t\t \"language\": \"%s\"\n\t\t\t },\n",
+		for(int i=0;i<channels[curr_channel].pid_i.num_pids;i++) {
+			unicast_reply_write(reply, "\t\t{\n\t\t\t \"number\": %d,\n\t\t\t \"type\": \"%s\",\n\t\t\t \"language\": \"%s\"\n\t\t\t }",
 					channels[curr_channel].pid_i.pids[i],
 					pid_type_to_str(channels[curr_channel].pid_i.pids_type[i]),
 					channels[curr_channel].pid_i.pids_language[i]);
-		if(channels[curr_channel].pid_i.num_pids>0)
-			reply->used_body -= 2; // dirty hack to erase the last comma
-		else
-			unicast_reply_write(reply, "{}\n");
-		unicast_reply_write(reply, "\n\t\t],\n\t\"clients\": [\n");
-		unicast_send_client_list_js(channels[curr_channel].clients, reply);
-		if(channels[curr_channel].num_clients)
-			reply->used_body -= 2; // dirty hack to erase the last comma
-		else
+			if(i < channels[curr_channel].pid_i.num_pids - 1) {
+				unicast_reply_write(reply, ",\n");
+			} else {
+				unicast_reply_write(reply, "\n");
+			}
+		}
+		if(channels[curr_channel].pid_i.num_pids == 0) {
 			unicast_reply_write(reply, "\t\t{}\n");
-		unicast_reply_write(reply, "\t\t]\n\t},\n");
+		}
+		unicast_reply_write(reply, "\t\t],\n\t\"clients\": [\n");
+		unicast_send_client_list_js(channels[curr_channel].clients, reply);
+		if(channels[curr_channel].num_clients == 0) {
+			unicast_reply_write(reply, "\t\t{}\n");
+		}
+		unicast_reply_write(reply, "\t\t]\n\t}");
+		if(curr_channel < number_of_channels - 1) {
+			unicast_reply_write(reply, ",\n");
+		} else {
+			unicast_reply_write(reply, "\n");
+		}
 	}
-	if(number_of_channels>0)
-		reply->used_body -= 2; // dirty hack to erase the last comma
-	else
-		unicast_reply_write(reply, "{}\n");
+	// When number_of_channels is 0, we don't write anything - the array will be empty []
 	return 0;
 }
 
@@ -191,6 +213,7 @@ int unicast_send_streamed_channels_list_js (int number_of_channels, mumudvb_chan
 		log_message( log_module, MSG_INFO,"Error when creating the HTTP reply\n");
 		return -1;
 	}
+	log_message(log_module, MSG_INFO, "JSON: Starting generation for %d channels, buffer_size=%d", number_of_channels, reply->length_body);
 	unicast_reply_write(reply, "[\n");
 #ifndef ENABLE_SCAM_SUPPORT
 	unicast_send_channel_list_js (number_of_channels, channels, scam_vars_v, reply);
@@ -198,6 +221,7 @@ int unicast_send_streamed_channels_list_js (int number_of_channels, mumudvb_chan
 	unicast_send_channel_list_js (number_of_channels, channels, scam_vars, reply);
 #endif
 	unicast_reply_write(reply, "]\n");
+	log_message(log_module, MSG_INFO, "JSON: Completed generation, final buffer_size=%d, used=%d", reply->length_body, reply->used_body);
 
 	unicast_reply_send(reply, Socket, 200, "application/json");
 
@@ -222,7 +246,12 @@ unicast_send_signal_power_js (int Socket, strength_parameters_t *strengthparams)
 		return -1;
 	}
 
-	unicast_reply_write(reply, "{\"ber\":%d, \"strength\":%d, \"snr\":%d, \"ub\":%d}\n", strengthparams->ber,strengthparams->strength,strengthparams->snr,strengthparams->ub);
+	// Check if we have valid data - if not, send a minimal response
+	if (!strengthparams) {
+		unicast_reply_write(reply, "{\"status\":\"initializing\",\"ber\":0,\"strength\":0,\"snr\":0,\"ub\":0,\"dbm\":0,\"snr_db\":0}\n");
+	} else {
+		unicast_reply_write(reply, "{\"ber\":%d, \"strength\":%d, \"snr\":%d, \"ub\":%d, \"dbm\":%d, \"snr_db\":%d}\n", strengthparams->ber,strengthparams->strength,strengthparams->snr,strengthparams->ub,strengthparams->dbm,strengthparams->snr_db);
+	}
 
 	unicast_reply_send(reply, Socket, 200, "application/json");
 
@@ -303,7 +332,7 @@ int
 unicast_send_channel_traffic_js (int number_of_channels, mumudvb_channel_t *channels, int Socket)
 {
 	int curr_channel;
-	extern long real_start_time;
+	// real_start_time is now accessed via thread-safe function get_real_start_time()
 
 	struct unicast_reply* reply = unicast_reply_init();
 	if (NULL == reply) {
@@ -311,7 +340,15 @@ unicast_send_channel_traffic_js (int number_of_channels, mumudvb_channel_t *chan
 		return -1;
 	}
 
-	if ((time((time_t*)0L) - real_start_time) >= 10) //10 seconds for the traffic calculation to be done
+	// Check if we have valid channels data
+	if (!channels || number_of_channels <= 0) {
+		unicast_reply_write(reply, "[]");
+		unicast_reply_send(reply, Socket, 200, "application/json");
+		unicast_reply_free(reply);
+		return 0;
+	}
+
+	if ((time((time_t*)0L) - get_real_start_time()) >= 10) //10 seconds for the traffic calculation to be done
 	{
 		unicast_reply_write(reply, "[");
 		for (curr_channel = 0; curr_channel < number_of_channels; curr_channel++)
@@ -361,6 +398,22 @@ unicast_send_json_state (int number_of_channels, mumudvb_channel_t *channels, in
 		return -1;
 	}
 
+	// Check if we have valid data - if not, send a minimal response
+	if (!strengthparams || !auto_p) {
+		unicast_reply_write(reply, "{\n");
+		unicast_reply_write(reply, "\"mumudvb\":{\n");
+		unicast_reply_write(reply, "\t\"version\" : \"%s\",\n", VERSION);
+		unicast_reply_write(reply, "\t\"pid\" : %d,\n", getpid());
+		unicast_reply_write(reply, "\t\"status\" : \"initializing\"\n");
+		unicast_reply_write(reply, "},\n");
+		unicast_reply_write(reply, "\"channels\":[]\n");
+		unicast_reply_write(reply, "}\n");
+		
+		unicast_reply_send(reply, Socket, 200, "application/json");
+		unicast_reply_free(reply);
+		return 0;
+	}
+
 	// Date time formatting
 	time_t rawtime;
 	time (&rawtime);
@@ -378,10 +431,10 @@ unicast_send_json_state (int number_of_channels, mumudvb_channel_t *channels, in
 	unicast_reply_write(reply, "\t\"pid\" : %d,\n", getpid());
 
 	// Uptime
-	extern long real_start_time;
+	// real_start_time is now accessed via thread-safe function get_real_start_time()
 	struct timeval tv;
 	gettimeofday (&tv, (struct timezone *) NULL);
-	unicast_reply_write(reply, "\t\"global_uptime\" : %d\n",(tv.tv_sec - real_start_time));
+	unicast_reply_write(reply, "\t\"global_uptime\" : %d\n",(tv.tv_sec - get_real_start_time()));
 	unicast_reply_write(reply, "},\n");
 
 	// ****************** TUNE ************************
@@ -410,15 +463,16 @@ unicast_send_json_state (int number_of_channels, mumudvb_channel_t *channels, in
 	// Frontend type
 	char fetype[10]="Unknown";
 #ifndef DISABLE_DVB_API
-	if (strengthparams->tune_p->fe_type==FE_OFDM)
+	if (strengthparams->tune_p->fe_type==FE_OFDM) {
 #ifdef DVBT2
 		if (strengthparams->tune_p->delivery_system==SYS_DVBT2)
 			snprintf(fetype,10,"DVB-T2");
 		else
 			snprintf(fetype,10,"DVB-T");
 #else
-	snprintf(fetype,10,"DVB-T");
+		snprintf(fetype,10,"DVB-T");
 #endif
+	}
 	if (strengthparams->tune_p->fe_type==FE_QAM)  snprintf(fetype,10,"DVB-C");
 	if (strengthparams->tune_p->fe_type==FE_ATSC) snprintf(fetype,10,"ATSC");
 	if (strengthparams->tune_p->fe_type==FE_QPSK)
@@ -460,6 +514,8 @@ unicast_send_json_state (int number_of_channels, mumudvb_channel_t *channels, in
 	unicast_reply_write(reply, "\t\"frontend_signal\" : %d,\n",strengthparams->strength);
 	unicast_reply_write(reply, "\t\"frontend_snr\" : %d,\n",strengthparams->snr);
 	unicast_reply_write(reply, "\t\"frontend_ub\" : %d,\n",strengthparams->ub);
+	unicast_reply_write(reply, "\t\"frontend_dbm\" : %d,\n",strengthparams->dbm);
+	unicast_reply_write(reply, "\t\"frontend_snr_db\" : %d,\n",strengthparams->snr_db);
 	unicast_reply_write(reply, "\t\"ts_discontinuities\" : %u\n",strengthparams->ts_discontinuities);
 
 	unicast_reply_write(reply, "},\n");
@@ -568,22 +624,42 @@ unicast_send_prometheus (int number_of_channels, mumudvb_channel_t *channels, in
         return -1;
     }
 
-    //Signal parameters
-    unicast_reply_write(reply, "# TYPE bit_error_rate gauge\n");
-    unicast_reply_write(reply, "bit_error_rate %d\n",strengthparams->ber);
-    unicast_reply_write(reply, "# TYPE signal_strength gauge\n");
-    unicast_reply_write(reply, "signal_strength %d\n",strengthparams->strength);
-    unicast_reply_write(reply, "# TYPE signal_to_noise_ratio gauge\n");
-    unicast_reply_write(reply, "signal_to_noise_ratio %d\n",strengthparams->snr);
+    // Check if we have valid data - if not, send a minimal response
+    if (!strengthparams) {
+        unicast_reply_write(reply, "# TYPE bit_error_rate gauge\n");
+        unicast_reply_write(reply, "bit_error_rate 0\n");
+        unicast_reply_write(reply, "# TYPE signal_strength gauge\n");
+        unicast_reply_write(reply, "signal_strength 0\n");
+        unicast_reply_write(reply, "# TYPE signal_strength_dbm gauge\n");
+        unicast_reply_write(reply, "signal_strength_dbm 0\n");
+        unicast_reply_write(reply, "# TYPE signal_to_noise_ratio gauge\n");
+        unicast_reply_write(reply, "signal_to_noise_ratio 0\n");
+        unicast_reply_write(reply, "# TYPE signal_to_noise_ratio_db gauge\n");
+        unicast_reply_write(reply, "signal_to_noise_ratio_db 0\n");
+        unicast_reply_write(reply, "# TYPE server_status gauge\n");
+        unicast_reply_write(reply, "server_status 0\n");
+    } else {
+        //Signal parameters
+        unicast_reply_write(reply, "# TYPE bit_error_rate gauge\n");
+        unicast_reply_write(reply, "bit_error_rate %d\n",strengthparams->ber);
+        unicast_reply_write(reply, "# TYPE signal_strength gauge\n");
+        unicast_reply_write(reply, "signal_strength %d\n",strengthparams->strength);
+        unicast_reply_write(reply, "# TYPE signal_strength_dbm gauge\n");
+        unicast_reply_write(reply, "signal_strength_dbm %d\n",strengthparams->dbm);
+        unicast_reply_write(reply, "# TYPE signal_to_noise_ratio gauge\n");
+        unicast_reply_write(reply, "signal_to_noise_ratio %d\n",strengthparams->snr);
+        unicast_reply_write(reply, "# TYPE signal_to_noise_ratio_db gauge\n");
+        unicast_reply_write(reply, "signal_to_noise_ratio_db %d\n",strengthparams->snr_db);
 
-    // Channels list
-    unicast_reply_write(reply, "# TYPE number_of_clients gauge\n");
-    for (curr_channel = 0; curr_channel < number_of_channels; curr_channel++)
-    {
-        //We give only channels which are ready
-        if(channels[curr_channel].channel_ready<READY)
-            continue;
-        unicast_reply_write(reply, "number_of_clients{name=\"%s\"} %d\n", channels[curr_channel].name, channels[curr_channel].num_clients);
+        // Channels list
+        unicast_reply_write(reply, "# TYPE number_of_clients gauge\n");
+        for (curr_channel = 0; curr_channel < number_of_channels; curr_channel++)
+        {
+            //We give only channels which are ready
+            if(channels[curr_channel].channel_ready<READY)
+                continue;
+            unicast_reply_write(reply, "number_of_clients{name=\"%s\"} %d\n", channels[curr_channel].name, channels[curr_channel].num_clients);
+        }
     }
     unicast_reply_send(reply, Socket, 200, "text/plain");
 
@@ -744,48 +820,98 @@ unicast_send_xml_state (int number_of_channels, mumudvb_channel_t *channels, int
 	// XML header
 	unicast_reply_write(reply, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
 
+	// Check if we have valid data - if not, send a minimal response
+	if (!strengthparams || !auto_p) {
+		unicast_reply_write(reply, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+		unicast_reply_write(reply, "<mumudvb status=\"initializing\">\n");
+		unicast_reply_write(reply, "\t<global_version><![CDATA[%s]]></global_version>\n", VERSION);
+		unicast_reply_write(reply, "\t<global_pid>%d</global_pid>\n", getpid());
+		unicast_reply_write(reply, "\t<status>Server is starting up - data not available yet</status>\n");
+		unicast_reply_write(reply, "\t<channels count=\"0\">\n");
+		unicast_reply_write(reply, "\t</channels>\n");
+		unicast_reply_write(reply, "</mumudvb>\n");
+		
+		unicast_reply_send(reply, Socket, 200, "application/xml");
+		unicast_reply_free(reply);
+		return 0;
+	}
+
+	// Check if we're in unified mode
+	extern unified_channel_system_t *global_unified_system;
+	int is_unified_mode = (global_unified_system && global_unified_system->num_cards > 0);
+	
 	// Starting XML content
-	unicast_reply_write(reply, "<mumudvb card=\"%d\" frontend=\"%d\">\n",strengthparams->tune_p->card,strengthparams->tune_p->tuner);
-	unicast_reply_write(reply, "<card_path><![CDATA[%s]]></card_path>\n",strengthparams->tune_p->card_dev_path);
+	if (is_unified_mode) {
+		unicast_reply_write(reply, "<mumudvb mode=\"unified\" cards=\"%d\">\n", global_unified_system->num_cards);
+		unicast_reply_write(reply, "<unified_system>\n");
+		unicast_reply_write(reply, "\t<num_cards>%d</num_cards>\n", global_unified_system->num_cards);
+		unicast_reply_write(reply, "\t<num_frequencies>%d</num_frequencies>\n", global_unified_system->num_frequencies);
+		unicast_reply_write(reply, "\t<scan_limit>%d</scan_limit>\n", global_unified_system->scan_limit);
+		unicast_reply_write(reply, "</unified_system>\n");
+	} else {
+		unicast_reply_write(reply, "<mumudvb card=\"%d\" frontend=\"%d\">\n",strengthparams->tune_p->card,strengthparams->tune_p->tuner);
+		unicast_reply_write(reply, "<card_path><![CDATA[%s]]></card_path>\n",strengthparams->tune_p->card_dev_path);
+	}
 
 	// Mumudvb information
 	unicast_reply_write(reply, "\t<global_version><![CDATA[%s]]></global_version>\n",VERSION);
 	unicast_reply_write(reply, "\t<global_pid>%d</global_pid>\n", getpid());
 
 	// Uptime
-	extern long real_start_time;
+	// real_start_time is now accessed via thread-safe function get_real_start_time()
 	struct timeval tv;
 	gettimeofday (&tv, (struct timezone *) NULL);
-	unicast_reply_write(reply, "\t<global_uptime>%d</global_uptime>\n",(tv.tv_sec - real_start_time));
+	unicast_reply_write(reply, "\t<global_uptime>%d</global_uptime>\n",(tv.tv_sec - get_real_start_time()));
 
 	// Frontend setup
-	unicast_reply_write(reply, "\t<frontend_name><![CDATA[%s]]></frontend_name>\n",strengthparams->tune_p->fe_name);
-	unicast_reply_write(reply, "\t<frontend_tuned>%d</frontend_tuned>\n",strengthparams->tune_p->card_tuned);
-	if (strengthparams->tune_p->fe_type==FE_QPSK) // Do some test for always showing frequency in kHz
-	{
-		unicast_reply_write(reply, "\t<frontend_frequency>%d</frontend_frequency>\n",strengthparams->tune_p->freq);
-		unicast_reply_write(reply, "\t<frontend_satnumber>%d</frontend_satnumber>\n",strengthparams->tune_p->sat_number);
+	if (is_unified_mode) {
+		// Show information for all cards in unified mode
+		unicast_reply_write(reply, "\t<cards>\n");
+		for (int card_idx = 0; card_idx < global_unified_system->num_cards; card_idx++) {
+			unified_card_t *card = &global_unified_system->cards[card_idx];
+			unicast_reply_write(reply, "\t\t<card id=\"%d\">\n", card->card_id);
+			unicast_reply_write(reply, "\t\t\t<card_path><![CDATA[/dev/dvb/adapter%d/]]></card_path>\n", card->card_id);
+			unicast_reply_write(reply, "\t\t\t<frontend_name><![CDATA[%s]]></frontend_name>\n", 
+			                   card->tune_params ? card->tune_params->fe_name : "Unknown");
+			unicast_reply_write(reply, "\t\t\t<frontend_tuned>%d</frontend_tuned>\n", 
+			                   card->tune_params ? card->tune_params->card_tuned : 0);
+			unicast_reply_write(reply, "\t\t\t<current_frequency>%.1f</current_frequency>\n", card->current_freq);
+			unicast_reply_write(reply, "\t\t\t<in_use>%d</in_use>\n", card->in_use);
+			unicast_reply_write(reply, "\t\t\t<num_frequencies>%d</num_frequencies>\n", card->num_frequencies);
+			unicast_reply_write(reply, "\t\t</card>\n");
+		}
+		unicast_reply_write(reply, "\t</cards>\n");
+	} else {
+		// Single card mode - show traditional information
+		unicast_reply_write(reply, "\t<frontend_name><![CDATA[%s]]></frontend_name>\n",strengthparams->tune_p->fe_name);
+		unicast_reply_write(reply, "\t<frontend_tuned>%d</frontend_tuned>\n",strengthparams->tune_p->card_tuned);
+		if (strengthparams->tune_p->fe_type==FE_QPSK) // Do some test for always showing frequency in kHz
+		{
+			unicast_reply_write(reply, "\t<frontend_frequency>%d</frontend_frequency>\n",strengthparams->tune_p->freq);
+			unicast_reply_write(reply, "\t<frontend_satnumber>%d</frontend_satnumber>\n",strengthparams->tune_p->sat_number);
+		}
+		else
+			unicast_reply_write(reply, "\t<frontend_frequency>%d</frontend_frequency>\n",(strengthparams->tune_p->freq)/1000);
+		if (strengthparams->tune_p->pol==0)
+			unicast_reply_write(reply, "\t<frontend_polarization><![CDATA[-]]></frontend_polarization>\n");
+		else
+			unicast_reply_write(reply, "\t<frontend_polarization><![CDATA[%c]]></frontend_polarization>\n",strengthparams->tune_p->pol);
+		unicast_reply_write(reply, "\t<frontend_symbolrate>%d</frontend_symbolrate>\n",strengthparams->tune_p->srate);
 	}
-	else
-		unicast_reply_write(reply, "\t<frontend_frequency>%d</frontend_frequency>\n",(strengthparams->tune_p->freq)/1000);
-	if (strengthparams->tune_p->pol==0)
-		unicast_reply_write(reply, "\t<frontend_polarization><![CDATA[-]]></frontend_polarization>\n");
-	else
-		unicast_reply_write(reply, "\t<frontend_polarization><![CDATA[%c]]></frontend_polarization>\n",strengthparams->tune_p->pol);
-	unicast_reply_write(reply, "\t<frontend_symbolrate>%d</frontend_symbolrate>\n",strengthparams->tune_p->srate);
 
 	// Frontend type
 	char fetype[10]="Unknown";
 #ifndef DISABLE_DVB_API
-	if (strengthparams->tune_p->fe_type==FE_OFDM)
+	if (strengthparams->tune_p->fe_type==FE_OFDM) {
 #ifdef DVBT2
 		if (strengthparams->tune_p->delivery_system==SYS_DVBT2)
 			snprintf(fetype,10,"DVB-T2");
 		else
 			snprintf(fetype,10,"DVB-T");
 #else
-	snprintf(fetype,10,"DVB-T");
+		snprintf(fetype,10,"DVB-T");
 #endif
+	}
 	if (strengthparams->tune_p->fe_type==FE_QAM)  snprintf(fetype,10,"DVB-C");
 	if (strengthparams->tune_p->fe_type==FE_ATSC) snprintf(fetype,10,"ATSC");
 	if (strengthparams->tune_p->fe_type==FE_QPSK)
@@ -827,6 +953,8 @@ unicast_send_xml_state (int number_of_channels, mumudvb_channel_t *channels, int
 	unicast_reply_write(reply, "\t<frontend_signal>%d</frontend_signal>\n",strengthparams->strength);
 	unicast_reply_write(reply, "\t<frontend_snr>%d</frontend_snr>\n",strengthparams->snr);
 	unicast_reply_write(reply, "\t<frontend_ub>%d</frontend_ub>\n",strengthparams->ub);
+	unicast_reply_write(reply, "\t<frontend_dbm>%d</frontend_dbm>\n",strengthparams->dbm);
+	unicast_reply_write(reply, "\t<frontend_snr_db>%d</frontend_snr_db>\n",strengthparams->snr_db);
 	unicast_reply_write(reply, "\t<ts_discontinuities>%u</ts_discontinuities>\n",strengthparams->ts_discontinuities);
 
 

@@ -1,0 +1,445 @@
+= MuMuDVB Troubleshooting Guide
+:author: MuMuDVB Team
+:email: mumudvb@braice.net
+:revnumber: 2.1.0
+:revdate: 2024-01-01
+:toc:
+:toclevels: 3
+:sectnums:
+:icons: font
+:source-highlighter: pygments
+:experimental:
+
+This guide helps you diagnose and resolve common issues with MuMuDVB.
+
+== Common Error Messages
+
+=== Configuration Errors
+
+==== "Config issue : unknown symbol : X"
+
+This error occurs when MuMuDVB encounters an unrecognized configuration parameter.
+
+**Common causes:**
+* Typo in parameter name (e.g., `autoconf` instead of `autoconfiguration`)
+* Parameter not supported in your MuMuDVB version
+* Parameter used in wrong context (global vs per-channel)
+
+**Solutions:**
+* Check parameter spelling against documentation
+* Verify parameter is supported in your MuMuDVB version
+* Ensure parameter is used in correct context
+
+**Common typos and corrections:**
+[width="80%",cols="2,4",options="header"]
+|==================================================================================================================
+|Incorrect |Correct
+|autoconf |autoconfiguration
+|unified_tuners |unified_cards
+|ts_id |service_id
+|==================================================================================================================
+
+==== "You have to start a channel first (using new_channel)"
+
+This error occurs when channel-specific parameters are used before declaring a channel.
+
+**Solution:**
+Add `new_channel` before channel-specific parameters:
+
+----
+# Wrong
+service_id=123
+name=My Channel
+
+# Correct
+new_channel
+service_id=123
+name=My Channel
+----
+
+==== "Card defined on the command line: X, overrides conf file Y"
+
+This warning appears when both command-line `-c` option and configuration file `card=` parameter are used.
+
+**Solution:**
+Use either command-line option OR configuration file parameter, not both.
+
+=== Tuning Errors
+
+==== "No signal" or "No lock"
+
+**Possible causes:**
+* Incorrect frequency
+* Wrong delivery system
+* Antenna/cable issues
+* Card not properly connected
+
+**Solutions:**
+* Verify frequency using `w_scan` or similar tool
+* Check delivery system (DVB-T, DVB-S, etc.)
+* Verify antenna/cable connections
+* Test with known working frequency
+
+==== "Tuning timeout"
+
+**Possible causes:**
+* Signal too weak
+* Wrong parameters
+* Hardware issues
+
+**Solutions:**
+* Increase `tuning_no_diff` value
+* Check signal strength
+* Verify tuning parameters
+* Test with different frequency
+
+=== Network Errors
+
+==== "Cannot bind to port X"
+
+**Possible causes:**
+* Port already in use
+* Insufficient permissions
+* Firewall blocking
+
+**Solutions:**
+* Check if port is already in use: `netstat -tulpn | grep :X`
+* Use different port number
+* Run with appropriate permissions
+* Check firewall settings
+
+==== "Connection refused"
+
+**Possible causes:**
+* MuMuDVB not running
+* Wrong IP address/port
+* Firewall blocking
+
+**Solutions:**
+* Verify MuMuDVB is running
+* Check IP address and port
+* Test with `telnet IP PORT`
+* Check firewall rules
+
+== Performance Issues
+
+=== High CPU Usage
+
+**Possible causes:**
+* Too many clients
+* Inefficient configuration
+* Hardware limitations
+
+**Solutions:**
+* Limit number of clients with `unicast_max_clients`
+* Use multicast instead of unicast when possible
+* Optimize buffer sizes
+* Check hardware specifications
+
+=== Memory Issues
+
+**Possible causes:**
+* Large buffer sizes
+* Memory leaks
+* Too many channels
+
+**Solutions:**
+* Reduce buffer sizes
+* Limit number of channels
+* Monitor memory usage
+* Restart MuMuDVB periodically
+
+=== Network Bandwidth Issues
+
+**Possible causes:**
+* Too many concurrent streams
+* High bitrate channels
+* Network congestion
+
+**Solutions:**
+* Limit concurrent clients
+* Use lower bitrate channels
+* Optimize network configuration
+* Use multicast when possible
+
+== Hardware Issues
+
+=== DVB Card Not Detected
+
+**Symptoms:**
+* "No DVB devices found"
+* Card not listed in `/dev/dvb/`
+
+**Solutions:**
+* Check card is properly installed
+* Verify drivers are loaded: `lsmod | grep dvb`
+* Check device files: `ls -la /dev/dvb/`
+* Reinstall DVB drivers if needed
+
+=== Signal Quality Issues
+
+**Symptoms:**
+* Frequent disconnections
+* Poor video quality
+* Missing channels
+
+**Solutions:**
+* Check antenna alignment
+* Verify cable connections
+* Test with different frequencies
+* Check for interference
+
+== Configuration Issues
+
+=== Autoconfiguration Not Working
+
+**Symptoms:**
+* No channels detected
+* "Autoconfiguration is now ready" but no channels
+
+**Solutions:**
+* Verify `autoconfiguration=full` is set
+* Check signal strength
+* Wait longer for detection (up to 30 seconds)
+* Try manual channel configuration
+
+=== Channels Not Streaming
+
+**Symptoms:**
+* Channels detected but not accessible
+* "Channel not ready" messages
+
+**Solutions:**
+* Check channel-specific configuration
+* Verify PIDs are correct
+* Check for scrambled channels
+* Review error logs
+
+=== HLS Not Working
+
+**Symptoms:**
+* HLS enabled but no files created
+* Playlist not updating
+
+**Solutions:**
+* Check `hls_storage_dir` permissions
+* Verify `hls=1` is set
+* Check disk space
+* Review HLS-specific logs
+
+== Log Analysis
+
+=== Understanding Log Levels
+
+* **ERROR**: Critical issues that prevent operation
+* **WARN**: Non-critical issues that may affect performance
+* **INFO**: General information about operation
+* **DEBUG**: Detailed debugging information
+
+=== Common Log Messages
+
+==== "Channel ready"
+Indicates a channel is successfully configured and streaming.
+
+==== "Channel not ready"
+Channel is detected but not yet streaming. May need more time or configuration.
+
+==== "Channel removed"
+Channel was previously available but is no longer in the stream.
+
+==== "Autoconfiguration is now ready"
+Autoconfiguration system has finished initial setup.
+
+=== Enabling Debug Logging
+
+Add to configuration file:
+----
+log_type=console
+log_header="[%date] %priority %module:"
+----
+
+== Network Troubleshooting
+
+=== Testing Connectivity
+
+**Test HTTP unicast:**
+----
+curl -I http://IP:PORT/
+----
+
+**Test multicast:**
+----
+# Join multicast group
+ip maddr add 239.100.0.101 dev eth0
+
+# Capture multicast traffic
+tcpdump -i eth0 host 239.100.0.101
+----
+
+**Test SAP announcements:**
+----
+# Listen for SAP packets
+tcpdump -i eth0 port 9875
+----
+
+=== Firewall Configuration
+
+**Required ports:**
+* HTTP unicast: `port_http` (default 4242)
+* Multicast: `common_port` (default 1234)
+* SAP announcements: 9875
+
+**iptables example:**
+----
+# Allow HTTP unicast
+iptables -A INPUT -p tcp --dport 4242 -j ACCEPT
+
+# Allow multicast
+iptables -A INPUT -p udp --dport 1234 -j ACCEPT
+
+# Allow SAP announcements
+iptables -A INPUT -p udp --dport 9875 -j ACCEPT
+----
+
+== Getting Help
+
+=== Before Asking for Help
+
+1. Check this troubleshooting guide
+2. Review MuMuDVB logs
+3. Test with minimal configuration
+4. Verify hardware setup
+5. Check system resources
+
+=== Information to Provide
+
+When reporting issues, include:
+
+* MuMuDVB version
+* Operating system and version
+* DVB card model and drivers
+* Complete configuration file
+* Relevant log output
+* Steps to reproduce the issue
+
+=== Resources
+
+* **Documentation**: `doc/README_CONF.asciidoc`
+* **Examples**: `doc/configuration_examples/`
+* **Mailing list**: mumudvb@braice.net
+* **Website**: http://mumudvb.net
+
+== Advanced Troubleshooting
+
+=== Debugging with strace
+
+Trace system calls to identify issues:
+----
+strace -f -e trace=network,file mumudvb -c config.conf
+----
+
+=== Memory debugging with valgrind
+
+Check for memory leaks:
+----
+valgrind --leak-check=full mumudvb -c config.conf
+----
+
+=== Network debugging with wireshark
+
+Analyze network traffic:
+----
+wireshark -i eth0 -f "port 4242 or port 1234"
+----
+
+=== Performance profiling
+
+Profile CPU usage:
+----
+perf record -g mumudvb -c config.conf
+perf report
+----
+
+== TCP Optimization
+
+MuMuDVB includes several TCP optimizations to improve performance and reliability:
+
+=== TCP Keepalive
+
+**Purpose:** Detects dead connections and cleans them up automatically.
+
+**Configuration:**
+----
+tcp_keepalive=1
+tcp_keepalive_idle=30
+tcp_keepalive_interval=5
+tcp_keepalive_count=3
+----
+
+**Parameters:**
+* `tcp_keepalive_idle`: Time before sending first keepalive probe (seconds)
+* `tcp_keepalive_interval`: Interval between keepalive probes (seconds)
+* `tcp_keepalive_count`: Number of failed probes before disconnect
+
+=== TCP Window Scaling
+
+**Purpose:** Improves performance for high-bandwidth connections by allowing larger window sizes.
+
+**Configuration:**
+----
+tcp_window_scaling=1
+socket_sendbuf_size=1048576
+----
+
+**Benefits:**
+* Better performance for high-bitrate streams
+* Improved throughput over high-latency connections
+* Better utilization of available bandwidth
+
+=== TCP Selective ACKs (SACK)
+
+**Purpose:** Improves performance for lossy networks by allowing selective retransmission.
+
+**Configuration:**
+----
+tcp_selective_acks=1
+----
+
+**Benefits:**
+* Faster recovery from packet loss
+* Better performance on unreliable networks
+* Reduced retransmission overhead
+
+=== Recommended TCP Settings
+
+**For high-performance streaming:**
+----
+# TCP optimizations
+tcp_keepalive=1
+tcp_keepalive_idle=30
+tcp_keepalive_interval=5
+tcp_keepalive_count=3
+tcp_window_scaling=1
+tcp_selective_acks=1
+socket_sendbuf_size=1048576
+
+# Basic settings
+unicast=1
+port_http=4242
+----
+
+**For low-latency applications:**
+----
+# TCP optimizations
+tcp_keepalive=1
+tcp_keepalive_idle=10
+tcp_keepalive_interval=2
+tcp_keepalive_count=3
+tcp_window_scaling=1
+tcp_selective_acks=1
+socket_sendbuf_size=262144
+
+# Basic settings
+unicast=1
+port_http=4242
+----

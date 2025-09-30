@@ -88,10 +88,11 @@
 #include "scam_decsa.h"
 #endif
 
-static char *log_module="Autoconf: ";
+char autoconf_log_module_buffer[64] = "Autoconf: ";
+char *autoconf_log_module = autoconf_log_module_buffer;
 
 
-int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p);
+int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id);
 int autoconf_read_cat(auto_p_t *auto_p,mumu_chan_p_t *chan_p);
 int autoconf_read_sdt(auto_p_t *auto_p,mumu_chan_p_t *chan_p);
 int autoconf_read_psip(auto_p_t *auto_p,mumu_chan_p_t *chan_p);
@@ -155,7 +156,7 @@ int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring)
 
 		if(!((auto_p->autoconfiguration==AUTOCONF_MODE_FULL)||(auto_p->autoconfiguration==AUTOCONF_MODE_NONE)))
 		{
-			log_message( log_module,  MSG_WARN,
+			log_message( autoconf_log_module,  MSG_WARN,
 					"Bad value for autoconfiguration, autoconfiguration will not be run\n");
 			auto_p->autoconfiguration=AUTOCONF_MODE_NONE;
 		}
@@ -166,7 +167,7 @@ int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring)
 		auto_p->autoconf_radios = atoi (substring);
 		if(!(auto_p->autoconfiguration==AUTOCONF_MODE_FULL))
 		{
-			log_message( log_module,  MSG_INFO,
+			log_message( autoconf_log_module,  MSG_INFO,
 					"You have to set autoconfiguration in full mode to use autoconf of the radios\n");
 		}
 	}
@@ -175,7 +176,7 @@ int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring)
 		substring = strtok (NULL, delimiteurs);
 		if(strlen(substring)>79)
 		{
-			log_message( log_module,  MSG_ERROR,
+			log_message( autoconf_log_module,  MSG_ERROR,
 					"The autoconf ip v4 is too long\n");
 			return -1;
 		}
@@ -186,7 +187,7 @@ int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring)
 		substring = strtok (NULL, delimiteurs);
 		if(strlen(substring)>79)
 		{
-			log_message( log_module,  MSG_ERROR,
+			log_message( autoconf_log_module,  MSG_ERROR,
 					"The autoconf ip v6 is too long\n");
 			return -1;
 		}
@@ -204,7 +205,7 @@ int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring)
 		substring = strtok (NULL, "=");
 		if(strlen(substring)>255)
 		{
-			log_message( log_module,  MSG_ERROR,
+			log_message( autoconf_log_module,  MSG_ERROR,
 					"The autoconf_unicast_port is too long\n");
 			return -1;
 		}
@@ -216,7 +217,7 @@ int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring)
 		substring = strtok (NULL, "=");
 		if(strlen(substring)>255)
 		{
-			log_message( log_module,  MSG_ERROR,
+			log_message( autoconf_log_module,  MSG_ERROR,
 					"The autoconf_multicast_port is too long\n");
 			return -1;
 		}
@@ -228,7 +229,7 @@ int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring)
 		{
 			if (auto_p->num_service_id >= MAX_CHANNELS)
 			{
-				log_message( log_module,  MSG_ERROR,
+				log_message( autoconf_log_module,  MSG_ERROR,
 						"Autoconfiguration : Too many ts id : %d\n",
 						auto_p->num_service_id);
 				return -1;
@@ -243,7 +244,7 @@ int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring)
 		{
 			if (auto_p->num_service_id_ignore >= MAX_CHANNELS)
 			{
-				log_message( log_module,  MSG_ERROR,
+				log_message( autoconf_log_module,  MSG_ERROR,
 						"Autoconfiguration : Too many ignored ts id : %d\n",
 						auto_p->num_service_id_ignore);
 				return -1;
@@ -259,7 +260,7 @@ int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring)
 		strncpy(auto_p->name_template,strtok(substring,"\n"),MAX_NAME_LEN-1);
 		auto_p->name_template[MAX_NAME_LEN-1]='\0';
 		if (strlen (substring) >= MAX_NAME_LEN - 1)
-			log_message( log_module,  MSG_WARN,"Autoconfiguration: Channel name template too long\n");
+			log_message( autoconf_log_module,  MSG_WARN,"Autoconfiguration: Channel name template too long\n");
 	}
 	else
 		return 0; //Nothing concerning autoconfiguration, we return 0 to explore the other possibilities
@@ -278,7 +279,7 @@ int autoconf_init(auto_p_t *auto_p)
 		auto_p->autoconf_temp_pat=malloc(sizeof(mumudvb_ts_packet_t));
 		if(auto_p->autoconf_temp_pat==NULL)
 		{
-			log_message( log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
+			log_message( autoconf_log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
 			set_interrupted(ERROR_MEMORY<<8);
 			return -1;
 		}
@@ -287,7 +288,7 @@ int autoconf_init(auto_p_t *auto_p)
 		auto_p->autoconf_temp_cat=malloc(sizeof(mumudvb_ts_packet_t));
 		if(auto_p->autoconf_temp_cat==NULL)
 		{
-			log_message( log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
+			log_message( autoconf_log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
 			set_interrupted(ERROR_MEMORY<<8);
 			return -1;
 		}
@@ -296,7 +297,7 @@ int autoconf_init(auto_p_t *auto_p)
 		auto_p->autoconf_temp_sdt=malloc(sizeof(mumudvb_ts_packet_t));
 		if(auto_p->autoconf_temp_sdt==NULL)
 		{
-			log_message( log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
+			log_message( autoconf_log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
 			set_interrupted(ERROR_MEMORY<<8);
 			return -1;
 		}
@@ -306,7 +307,7 @@ int autoconf_init(auto_p_t *auto_p)
 		auto_p->autoconf_temp_psip=malloc(sizeof(mumudvb_ts_packet_t));
 		if(auto_p->autoconf_temp_psip==NULL)
 		{
-			log_message( log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
+			log_message( autoconf_log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
 			set_interrupted(ERROR_MEMORY<<8);
 			return -1;
 		}
@@ -316,7 +317,7 @@ int autoconf_init(auto_p_t *auto_p)
 		auto_p->autoconf_temp_nit=malloc(sizeof(mumudvb_ts_packet_t));
 		if(auto_p->autoconf_temp_nit==NULL)
 		{
-			log_message( log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
+			log_message( autoconf_log_module, MSG_ERROR,"Problem with malloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
 			set_interrupted(ERROR_MEMORY<<8);
 			return -1;
 		}
@@ -377,10 +378,10 @@ void autoconf_freeing(auto_p_t *auto_p)
 
 
 /** Update the status of the channels */
-void autoconf_update_chan_status(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
+void autoconf_update_chan_status(auto_p_t *auto_p,mumu_chan_p_t *chan_p, int card_id)
 {
-	//TODO: this function is a duplicate of what is done at the init of the global program : merge it
-	log_message( log_module, MSG_INFO,"Looking through all channels to see if they are ready for streaming");
+	// Update channel status based on current configuration and channel state
+		log_message( autoconf_log_module, MSG_INFO,"[card-%d] Looking through all channels to see if they are ready for streaming", card_id);
 	pthread_mutex_lock(&chan_p->lock);
 	for (int ichan = 0; ichan < chan_p->number_of_channels; ichan++)
 	{
@@ -394,14 +395,14 @@ void autoconf_update_chan_status(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
 
 		if(!auto_p->autoconf_scrambled && chan_p->channels[ichan].free_ca_mode)
 		{
-				log_message( log_module, MSG_DETAIL,"Channel scrambled, no CAM support and no autoconf_scrambled, we skip. Name \"%s\"",
+				log_message( autoconf_log_module, MSG_DETAIL,"Channel scrambled, no CAM support and no autoconf_scrambled, we skip. Name \"%s\"",
 						chan_p->channels[ichan].name);
 				chan_p->channels[ichan].channel_ready=NO_STREAMING;
 				continue;
 		}
 		if(!chan_p->channels[ichan].pid_i.pmt_pid)
 		{
-				log_message( log_module, MSG_DETAIL,"Service without a PMT PID, we skip. Name \"%s\"",
+				log_message( autoconf_log_module, MSG_DETAIL,"Service without a PMT PID, we skip. Name \"%s\"",
 						chan_p->channels[ichan].name);
 				chan_p->channels[ichan].channel_ready=NO_STREAMING;
 				continue;
@@ -416,13 +417,13 @@ void autoconf_update_chan_status(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
 				if(auto_p->service_id_list[sid_i]==chan_p->channels[ichan].service_id)
 				{
 					found_in_service_id_list=1;
-					log_message( log_module, MSG_DEBUG,"Service found in the service_id list. Name \"%s\"",
+					log_message( autoconf_log_module, MSG_DEBUG,"Service found in the service_id list. Name \"%s\"",
 							chan_p->channels[ichan].name);
 				}
 			}
 			if(found_in_service_id_list==0)
 			{
-				log_message( log_module, MSG_DETAIL,"Service NOT in the service_id list, we skip. Name \"%s\", id %d\n",
+				log_message( autoconf_log_module, MSG_DETAIL,"Service NOT in the service_id list, we skip. Name \"%s\", id %d\n",
 						chan_p->channels[ichan].name,
 						chan_p->channels[ichan].service_id);
 				chan_p->channels[ichan].channel_ready=NO_STREAMING;
@@ -444,7 +445,7 @@ void autoconf_update_chan_status(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
 			}
 			if(found_in_service_id_ignore_list==1)
 			{
-				log_message( log_module, MSG_DETAIL,"Service in ignore list, we skip. Name \"%s\", id %d\n",
+				log_message( autoconf_log_module, MSG_DETAIL,"Service in ignore list, we skip. Name \"%s\", id %d\n",
 						chan_p->channels[ichan].name,
 						chan_p->channels[ichan].service_id);
 				chan_p->channels[ichan].channel_ready=NO_STREAMING;
@@ -464,19 +465,19 @@ void autoconf_update_chan_status(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
 				((chan_p->channels[ichan].service_type==0x02||
 						chan_p->channels[ichan].service_type==0x0a)&&auto_p->autoconf_radios))
 		{
-			log_message( log_module, MSG_DETAIL,"Service OK becoming ready. Name \"%s\", id %d type %s",
+			log_message( autoconf_log_module, MSG_DETAIL,"Service OK becoming ready. Name \"%s\", id %d type %s",
 					chan_p->channels[ichan].name,
 					chan_p->channels[ichan].service_id, service_type_to_str(chan_p->channels[ichan].service_type));
 			//We set it to almost ready because network is not up yet
 			chan_p->channels[ichan].channel_ready=ALMOST_READY;
 		}
 		else if(chan_p->channels[ichan].service_type==0x02||chan_p->channels[ichan].service_type==0x0a) //service_type digital radio sound service
-			log_message( log_module, MSG_DETAIL,"Service type digital radio sound service, no autoconfigure. (if you want add autoconf_radios=1 to your configuration file) Name \"%s\"\n",
+			log_message( autoconf_log_module, MSG_DETAIL,"Service type digital radio sound service, no autoconfigure. (if you want add autoconf_radios=1 to your configuration file) Name \"%s\"\n",
 					chan_p->channels[ichan].name);
 		else if(chan_p->channels[ichan].service_type!=0) //0 is an empty service
 		{
 			//We show the service type
-			log_message( log_module, MSG_DETAIL,"No autoconfiguration because of service type : 0x%x %s. Name \"%s\"\n",
+			log_message( autoconf_log_module, MSG_DETAIL,"No autoconfiguration because of service type : 0x%x %s. Name \"%s\"\n",
 					chan_p->channels[ichan].service_type,service_type_to_str(chan_p->channels[ichan].service_type),
 					chan_p->channels[ichan].name);
 		}
@@ -489,7 +490,7 @@ void autoconf_update_chan_status(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
  */
 void autoconf_update_chan_name(mumu_chan_p_t *chan_p, auto_p_t *auto_p)
 {
-	//TODO: this function is a duplicate of what is done at the init of the global program : merge it
+	// Update channel names based on templates and service information
 	for (int ichan = 0; ichan < chan_p->number_of_channels; ichan++)
 	{
 		int has_lcn;
@@ -542,7 +543,7 @@ void autoconf_update_chan_name(mumu_chan_p_t *chan_p, auto_p_t *auto_p)
 		{
 			if(chan_p->channels[ichan].pid_i.pids_language[i][0]!='-')
 			{
-				log_message( log_module,  MSG_FLOOD, "Primary language for channel: %s",chan_p->channels[ichan].pid_i.pids_language[i]);
+				log_message( autoconf_log_module,  MSG_FLOOD, "Primary language for channel: %s",chan_p->channels[ichan].pid_i.pids_language[i]);
 				mumu_string_replace(chan_p->channels[ichan].name,&len,0,"%lang",chan_p->channels[ichan].pid_i.pids_language[i]);
 				found=1; //we exit the loop
 			}
@@ -556,7 +557,7 @@ void autoconf_update_chan_name(mumu_chan_p_t *chan_p, auto_p_t *auto_p)
 		/*************************
 		 * Show the result
 		 **************************/
-		log_message( log_module, MSG_DEBUG, "Channel SID %d service name: \"%s\" user name: \"%s\" channel name: \"%s\"",
+		log_message( autoconf_log_module, MSG_DEBUG, "Channel SID %d service name: \"%s\" user name: \"%s\" channel name: \"%s\"",
 				chan_p->channels[ichan].service_id,
 				chan_p->channels[ichan].service_name,
 				chan_p->channels[ichan].user_name,
@@ -570,12 +571,12 @@ void autoconf_update_chan_name(mumu_chan_p_t *chan_p, auto_p_t *auto_p)
 		//We check if the NIT has been read before sending SAP
 		if(has_lcn && ! auto_p->nit_all_sections_seen)
 		{
-			log_message( log_module, MSG_FLOOD, "Channel name: \"%s\" LCN asked but the NIT has not been seen yet, we delay SAP announces for this channel",
+			log_message( autoconf_log_module, MSG_FLOOD, "Channel name: \"%s\" LCN asked but the NIT has not been seen yet, we delay SAP announces for this channel",
 							chan_p->channels[ichan].name);
 			chan_p->channels[ichan].sap_need_update=0;
 		}
 		else
-			log_message( log_module, MSG_FLOOD, "Channel name: \"%s\" LCN asked and the NIT has been seen, SAP will be sent for this channel",
+			log_message( autoconf_log_module, MSG_FLOOD, "Channel name: \"%s\" LCN asked and the NIT has been seen, SAP will be sent for this channel",
 							chan_p->channels[ichan].name);
 
 	}
@@ -588,7 +589,7 @@ void autoconf_update_chan_name(mumu_chan_p_t *chan_p, auto_p_t *auto_p)
  * Autoconfiguration new packet functions
  ********************************************************************/
 /** @brief This function is called when a new packet is there and the autoconf is not finished*/
-int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds_t *fds, mumu_chan_p_t *chan_p, tune_p_t *tune_p, multi_p_t *multi_p,  unicast_parameters_t *unicast_vars, int server_id, void *scam_vars)
+int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds_t *fds, mumu_chan_p_t *chan_p, tune_p_t *tune_p, multi_p_t *multi_p,  unicast_parameters_t *unicast_vars, int server_id, void *scam_vars, int card_id)
 {
 	if(auto_p->autoconfiguration==AUTOCONF_MODE_FULL) //Full autoconfiguration, we search the channels and their names
 	{
@@ -601,7 +602,7 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 				while(auto_p->pat_need_update && get_ts_packet(ts_packet,auto_p->autoconf_temp_pat))
 				{
 					ts_packet=NULL; // next call we only POP packets from the stack
-					autoconf_read_pat(auto_p,chan_p);
+					autoconf_read_pat(auto_p,chan_p,card_id);
 				}
 			}
 		}
@@ -651,7 +652,7 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 					if(autoconf_read_nit(auto_p, chan_p))
 					{
 						//We update the names for the %lcn
-						log_message( log_module, MSG_INFO,"We got the NIT, we update the channel names");
+						log_message( autoconf_log_module, MSG_INFO,"[card-%d] We got the NIT, we update the channel names", card_id);
 						autoconf_update_chan_name(chan_p, auto_p);
 					}
 
@@ -661,13 +662,13 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 		if(auto_p->need_filter_chan_update)
 		{
 			//We update all aspects of the channels
-			log_message( log_module, MSG_INFO,"We update the channel names");
+			log_message( autoconf_log_module, MSG_INFO,"[card-%d] We update the channel names", card_id);
 			autoconf_update_chan_name(chan_p, auto_p);
-			log_message( log_module, MSG_INFO,"We update the channel status");
-			autoconf_update_chan_status(auto_p,chan_p);
-			log_message( log_module, MSG_INFO,"We update the channel filters");
-			update_chan_filters(chan_p, tune_p->card_dev_path, tune_p->tuner, fds);
-			log_message( log_module, MSG_INFO,"We update the channel networking");
+			log_message( autoconf_log_module, MSG_INFO,"[card-%d] We update the channel status", card_id);
+			autoconf_update_chan_status(auto_p,chan_p, card_id);
+			log_message( autoconf_log_module, MSG_INFO,"[card-%d] We update the channel filters", card_id);
+			update_chan_filters(chan_p, tune_p->card_dev_path, tune_p->tuner, fds, tune_p->card);
+			log_message( autoconf_log_module, MSG_INFO,"[card-%d] We update the channel networking", card_id);
 			update_chan_net(chan_p, auto_p, multi_p, unicast_vars, server_id, tune_p->card, tune_p->tuner);
 			auto_p->need_filter_chan_update=0;
 		}
@@ -686,10 +687,10 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 					if(autoconf_read_pmt(auto_p, &chan_p->channels[ichan], chan_p->channels[ichan].pmt_packet))
 					{
 						chan_p->channels[ichan].autoconf_pmt_need_update=0;
-						log_pids(log_module,&chan_p->channels[ichan],ichan);
+						log_pids(autoconf_log_module,&chan_p->channels[ichan],ichan);
 						autoconf_update_chan_name(chan_p, auto_p);
-						update_chan_filters(chan_p, tune_p->card_dev_path, tune_p->tuner, fds);
-						log_message( log_module, MSG_INFO,"We update the channel CAM support");
+						update_chan_filters(chan_p, tune_p->card_dev_path, tune_p->tuner, fds, tune_p->card);
+						log_message( autoconf_log_module, MSG_INFO,"card-%d We update the channel CAM support", card_id);
 						chan_update_CAM(chan_p, auto_p,  scam_vars);
 						channel_updated=1;
 					}
@@ -705,7 +706,7 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 						channel_left=1;
 				}
 				if(!channel_left)
-						log_streamed_channels(log_module,chan_p->number_of_channels, chan_p->channels, multi_p->multicast_ipv4, multi_p->multicast_ipv6, unicast_vars->unicast, unicast_vars->portOut, unicast_vars->ipOut);
+						log_streamed_channels(autoconf_log_module,chan_p->number_of_channels, chan_p->channels, multi_p->multicast_ipv4, multi_p->multicast_ipv6, unicast_vars->unicast, unicast_vars->portOut, unicast_vars->ipOut, tune_p->card);
 			}
 		}
 

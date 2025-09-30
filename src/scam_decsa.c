@@ -44,6 +44,7 @@
 #include "mumudvb.h"
 #include "log.h"
 #include "scam_common.h"
+#include "event_timing.h"
 
 #include <dvbcsa/dvbcsa.h>
 
@@ -154,14 +155,14 @@ static void *decsathread_func(void* arg)
       } else
         log_message( log_module, MSG_ERROR, "thread starved, channel %s %u %u\n",channel->name,channel->ring_buf->to_descramble,channel->ring_buf->to_send);
       pthread_mutex_unlock(&channel->ring_buf->lock);
-      usleep(50000);
+      EVENT_MSLEEP(50);
       pthread_mutex_lock(&channel->ring_buf->lock);
       continue;
     }
 
     if (now_time < decsa_time) {
       pthread_mutex_unlock(&channel->ring_buf->lock);
-      usleep(decsa_time - now_time);
+      EVENT_SLEEP_INTERRUPTIBLE(decsa_time - now_time);
       pthread_mutex_lock(&channel->ring_buf->lock);
     }
 

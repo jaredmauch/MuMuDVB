@@ -240,7 +240,7 @@ int string_comput(char *string)
 	tempchar=malloc(sizeof(char)*(len+1));
 	if (tempchar == NULL)
 		return 0;
-	strncpy(tempchar,string,len);
+	memcpy(tempchar,string,len);
 	tempchar[len]='\0';
 	number1=string_mult(tempchar);
 	free(tempchar);
@@ -466,8 +466,16 @@ void send_func(mumudvb_channel_t *channel, uint64_t now_time, struct unicast_par
     channel->nb_bytes = 0;
 }
 
-static int interrupted = 0;
+volatile int interrupted = 0;
 static pthread_mutex_t interrupted_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Global signal and timing variables with thread-safe access
+volatile int received_signal = 0;
+static pthread_mutex_t signal_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static long now = 0;
+static long real_start_time = 0;
+static pthread_mutex_t timing_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 int set_interrupted(int value)
 {
@@ -488,4 +496,61 @@ int get_interrupted(void)
 	ret = interrupted;
 	pthread_mutex_unlock(&interrupted_mutex);
 	return ret;
+}
+
+// Thread-safe signal variable access
+int get_received_signal(void)
+{
+	int signal;
+	pthread_mutex_lock(&signal_mutex);
+	signal = received_signal;
+	pthread_mutex_unlock(&signal_mutex);
+	return signal;
+}
+
+void set_received_signal(int signal)
+{
+	pthread_mutex_lock(&signal_mutex);
+	received_signal = signal;
+	pthread_mutex_unlock(&signal_mutex);
+}
+
+void clear_received_signal(void)
+{
+	pthread_mutex_lock(&signal_mutex);
+	received_signal = 0;
+	pthread_mutex_unlock(&signal_mutex);
+}
+
+// Thread-safe timing variable access
+long get_now(void)
+{
+	long current_now;
+	pthread_mutex_lock(&timing_mutex);
+	current_now = now;
+	pthread_mutex_unlock(&timing_mutex);
+	return current_now;
+}
+
+void set_now(long new_now)
+{
+	pthread_mutex_lock(&timing_mutex);
+	now = new_now;
+	pthread_mutex_unlock(&timing_mutex);
+}
+
+long get_real_start_time(void)
+{
+	long start_time;
+	pthread_mutex_lock(&timing_mutex);
+	start_time = real_start_time;
+	pthread_mutex_unlock(&timing_mutex);
+	return start_time;
+}
+
+void set_real_start_time(long new_start_time)
+{
+	pthread_mutex_lock(&timing_mutex);
+	real_start_time = new_start_time;
+	pthread_mutex_unlock(&timing_mutex);
 }

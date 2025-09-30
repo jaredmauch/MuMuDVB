@@ -59,10 +59,63 @@
 #include "errors.h"
 #include "log.h"
 #include "dvb.h"
+#include "main_thread_poll.h"
 #include "math.h"
 
 
 static char *log_module="Tune: ";
+
+/** @brief Automatically detect and set delivery system based on card frontend type
+ * @param tuneparams Tuning parameters structure
+ */
+void auto_detect_delivery_system(tune_p_t *tuneparams)
+{
+#if DVB_API_VERSION >= 5
+	if (!tuneparams) {
+		return;
+	}
+	
+	// Only auto-detect if delivery system is not already set
+	if (tuneparams->delivery_system != SYS_UNDEFINED) {
+		return;
+	}
+	
+	int fe_type = get_card_frontend_type(tuneparams->card, tuneparams->tuner);
+	if (fe_type < 0) {
+		log_message(log_module, MSG_WARN, "Could not detect frontend type for card %d, delivery system not auto-configured", tuneparams->card);
+		return;
+	}
+	
+	switch (fe_type) {
+	case FE_OFDM: // DVB-T
+		tuneparams->fe_type = FE_OFDM;
+		tuneparams->delivery_system = SYS_DVBT;
+		log_message(log_module, MSG_INFO, "Auto-detected delivery system: DVB-T (terrestrial)");
+		break;
+	case FE_QPSK: // DVB-S
+		tuneparams->fe_type = FE_QPSK;
+		tuneparams->delivery_system = SYS_DVBS;
+		log_message(log_module, MSG_INFO, "Auto-detected delivery system: DVB-S (satellite)");
+		break;
+	case FE_QAM: // DVB-C
+		tuneparams->fe_type = FE_QAM;
+		tuneparams->delivery_system = SYS_DVBC_ANNEX_AC;
+		log_message(log_module, MSG_INFO, "Auto-detected delivery system: DVB-C (cable)");
+		break;
+	case FE_ATSC: // ATSC
+		tuneparams->fe_type = FE_ATSC;
+		tuneparams->delivery_system = SYS_ATSC;
+		log_message(log_module, MSG_INFO, "Auto-detected delivery system: ATSC");
+		break;
+	default:
+		log_message(log_module, MSG_WARN, "Unknown frontend type %d for card %d, delivery system not auto-configured", fe_type, tuneparams->card);
+		break;
+	}
+#else
+	// DVB API not available, cannot auto-detect
+	log_message(log_module, MSG_WARN, "DVB API not available, cannot auto-detect delivery system");
+#endif
+}
 
 /** Initialize tune variables*/
 void init_tune_v(tune_p_t *tune_p)
@@ -143,7 +196,7 @@ int read_tuning_configuration(tune_p_t *tuneparams, char *substring)
 		tuneparams->sat_number = atoi (substring);
 		if (tuneparams->sat_number > 4)
 		{
-			log_message( log_module,  MSG_ERROR, "Config issue : sat_number. The satellite number must be between 0 and 4. Please report if you have an equipment wich support more\n");
+			log_message( log_module,  MSG_ERROR, "Config issue : sat_number=%d. The satellite number must be between 0 and 4. Please report if you have equipment which supports more satellites.\n", tuneparams->sat_number);
 			return -1;
 		}
 	}
@@ -153,7 +206,7 @@ int read_tuning_configuration(tune_p_t *tuneparams, char *substring)
 		tuneparams->switch_no = atoi (substring);
 		if (tuneparams->switch_no > 31)
 		{
-			log_message( log_module,  MSG_ERROR, "Configuration issue : switch_input. The diseqc switch input number must be between 0 and 31.\n");
+			log_message( log_module,  MSG_ERROR, "Configuration issue : switch_input=%d. The DiSEqC switch input number must be between 0 and 31.\n", tuneparams->switch_no);
 			return -1;
 		}
 	}
@@ -163,7 +216,7 @@ int read_tuning_configuration(tune_p_t *tuneparams, char *substring)
 		tuneparams->pin_no = atoi (substring);
 		if ((tuneparams->pin_no > 255) || (tuneparams->pin_no < 0))
 		{
-			log_message( log_module,  MSG_ERROR, "Config issue : pin_number. The diseqc pin number must be between 0 and 255.\n");
+			log_message( log_module,  MSG_ERROR, "Config issue : pin_number=%d. The DiSEqC pin number must be between 0 and 255. Setting to -1 (disabled).\n", tuneparams->pin_no);
 			tuneparams->pin_no=-1;
 		}
 	}
@@ -264,7 +317,29 @@ int read_tuning_configuration(tune_p_t *tuneparams, char *substring)
 		}
 		else
 		{
-			tuneparams->card = atoi (substring);
+			// Check if "auto" is specified
+			if (!strcmp (substring, "auto"))
+			{
+				int available_cards[16];
+				int num_cards = detect_available_cards(available_cards, 16);
+				if (num_cards > 0)
+				{
+					tuneparams->card = available_cards[0]; // Use first available card
+					log_message( log_module, MSG_INFO, "Auto-detected card: %d (from %d available cards)", tuneparams->card, num_cards);
+					
+					// Auto-detect delivery system based on card type
+					auto_detect_delivery_system(tuneparams);
+				}
+				else
+				{
+					log_message( log_module, MSG_ERROR, "No DVB cards detected for auto-selection");
+					return -1;
+				}
+			}
+			else
+			{
+				tuneparams->card = atoi (substring);
+			}
 		}
 	}
 	else if (!strcmp (substring, "check_status"))
@@ -770,22 +845,58 @@ int read_tuning_configuration(tune_p_t *tuneparams, char *substring)
 
 
 
+/** @brief Get status string
+ * Get a string representation of the status contained in festatus
+ *
+ * @param festatus the status to convert
+ * @param status_str buffer to store the status string
+ * @param max_len maximum length of the buffer
+ */
+void get_status_string(unsigned int festatus, char *status_str, int max_len)
+{
+#ifndef DISABLE_DVB_API
+	char temp_str[512] = {0};
+	int pos = 0;
+	
+	pos += snprintf(temp_str + pos, sizeof(temp_str) - pos, "FE_STATUS:");
+	if (festatus & FE_HAS_SIGNAL) pos += snprintf(temp_str + pos, sizeof(temp_str) - pos, " SIGNAL");
+	if (festatus & FE_HAS_CARRIER) pos += snprintf(temp_str + pos, sizeof(temp_str) - pos, " CARRIER");
+	if (festatus & FE_HAS_VITERBI) pos += snprintf(temp_str + pos, sizeof(temp_str) - pos, " VITERBI");
+	if (festatus & FE_HAS_SYNC) pos += snprintf(temp_str + pos, sizeof(temp_str) - pos, " SYNC");
+	if (festatus & FE_HAS_LOCK) pos += snprintf(temp_str + pos, sizeof(temp_str) - pos, " LOCK");
+	if (festatus & FE_TIMEDOUT) pos += snprintf(temp_str + pos, sizeof(temp_str) - pos, " TIMEDOUT");
+	if (festatus & FE_REINIT) pos += snprintf(temp_str + pos, sizeof(temp_str) - pos, " REINIT");
+	
+	strncpy(status_str, temp_str, max_len - 1);
+	status_str[max_len - 1] = '\0';
+#else
+	strncpy(status_str, "FE_STATUS: (disabled)", max_len - 1);
+	status_str[max_len - 1] = '\0';
+#endif
+}
+
 /** @brief Print the status
  * Print the status contained in festatus, this status says if the card is lock, sync etc.
  *
  * @param festatus the status to display
+ * @param card_id the card identifier
+ * @param frequency the frequency in Hz (0 if not available)
  */
-void print_status(fe_status_t festatus)
+void print_status(fe_status_t festatus, int card_id, uint32_t frequency)
 {
 #ifndef DISABLE_DVB_API
-	log_message( log_module,  MSG_INFO, "FE_STATUS:\n");
-	if (festatus & FE_HAS_SIGNAL) log_message( log_module,  MSG_INFO, "     FE_HAS_SIGNAL : found something above the noise level\n");
-	if (festatus & FE_HAS_CARRIER) log_message( log_module,  MSG_INFO, "     FE_HAS_CARRIER : found a DVB signal\n");
-	if (festatus & FE_HAS_VITERBI) log_message( log_module,  MSG_INFO, "     FE_HAS_VITERBI : FEC is stable\n");
-	if (festatus & FE_HAS_SYNC) log_message( log_module,  MSG_INFO, "     FE_HAS_SYNC : found sync bytes\n");
-	if (festatus & FE_HAS_LOCK) log_message( log_module,  MSG_INFO, "     FE_HAS_LOCK : everything's working... \n");
-	if (festatus & FE_TIMEDOUT) log_message( log_module,  MSG_INFO, "     FE_TIMEDOUT : no lock within the last about 2 seconds\n");
-	if (festatus & FE_REINIT) log_message( log_module,  MSG_INFO, "     FE_REINIT : frontend was reinitialized\n");
+	if (frequency > 0) {
+		log_message( log_module,  MSG_INFO, "card-%d FE_STATUS: freq: %.1f MHz\n", card_id, frequency/1000000.0);
+	} else {
+		log_message( log_module,  MSG_INFO, "card-%d FE_STATUS:\n", card_id);
+	}
+	if (festatus & FE_HAS_SIGNAL) log_message( log_module,  MSG_INFO, "card-%d      FE_HAS_SIGNAL : found something above the noise level\n", card_id);
+	if (festatus & FE_HAS_CARRIER) log_message( log_module,  MSG_INFO, "card-%d      FE_HAS_CARRIER : found a DVB signal\n", card_id);
+	if (festatus & FE_HAS_VITERBI) log_message( log_module,  MSG_INFO, "card-%d      FE_HAS_VITERBI : FEC is stable\n", card_id);
+	if (festatus & FE_HAS_SYNC) log_message( log_module,  MSG_INFO, "card-%d      FE_HAS_SYNC : found sync bytes\n", card_id);
+	if (festatus & FE_HAS_LOCK) log_message( log_module,  MSG_INFO, "card-%d      FE_HAS_LOCK : everything's working... \n", card_id);
+	if (festatus & FE_TIMEDOUT) log_message( log_module,  MSG_INFO, "card-%d      FE_TIMEDOUT : no lock within the last about 2 seconds\n", card_id);
+	if (festatus & FE_REINIT) log_message( log_module,  MSG_INFO, "card-%d      FE_REINIT : frontend was reinitialized\n", card_id);
 #endif
 }
 
@@ -798,10 +909,13 @@ struct diseqc_cmd {
 
 /** @brief Wait msec miliseconds
  */
-static inline void msleep(uint32_t msec)
+static inline int msleep(uint32_t msec)
 {
-	struct timespec req = { msec / 1000, 1000000 * (msec % 1000) };
-	while (nanosleep(&req, &req));
+	// Use interruptible sleep instead of blocking nanosleep
+	if (event_sleep_interruptible(msec * 1000) < 0) {
+		return -1; // Interrupted
+	}
+	return 0;
 }
 
 /** @brief Send a diseqc message
@@ -828,7 +942,9 @@ static int diseqc_send_msg(int fd, fe_sec_voltage_t v, struct diseqc_cmd **cmd, 
 		return -1;
 	}
 	log_message( log_module,  MSG_INFO, "DISEQC: Setting Voltage and wait %d ms\n",wait);
-	msleep(wait);
+	if (msleep(wait) < 0) {
+		return -1; // Interrupted
+	}
 
 	while (*cmd) {
 
@@ -836,7 +952,9 @@ static int diseqc_send_msg(int fd, fe_sec_voltage_t v, struct diseqc_cmd **cmd, 
 		{ log_message( log_module,  MSG_WARN, "problem sending the DiseqC message\n");
 			return -1;
 		}
-		msleep(wait);
+		if (msleep(wait) < 0) {
+			return -1; // Interrupted
+		}
 		log_message( log_module,  MSG_INFO, "DISEQC: Send CMD and wait %d ms\n",wait);
 		cmd++;
 	}
@@ -846,13 +964,17 @@ static int diseqc_send_msg(int fd, fe_sec_voltage_t v, struct diseqc_cmd **cmd, 
 			return err;
 		}
 	log_message( log_module,  MSG_INFO, "DISEQC: Send BURST and wait %d ms\n",wait);
-	msleep(wait);
+	if (msleep(wait) < 0) {
+		return -1; // Interrupted
+	}
 
 	if(ioctl(fd, FE_SET_TONE, t) < 0)
 		{	log_message( log_module,  MSG_WARN, "problem Setting the Tone back\n");
 			return -1;
 		}
-	msleep(wait);
+	if (msleep(wait) < 0) {
+		return -1; // Interrupted
+	}
 	log_message( log_module,  MSG_INFO, "DISEQC: Set TONE back and wait %d ms\n",wait);
 
 	return 0;
@@ -881,7 +1003,9 @@ static int unicable_send_msg(int fd, struct diseqc_cmd **cmd)
 		log_message( log_module,  MSG_WARN, "problem Setting the Voltage\n");
 		return -1;
 	}
-	msleep((*cmd)->wait);  // AN2056: "more than 4ms" after 13V -> 18V; EN50494: 4..22ms
+	if (msleep((*cmd)->wait) < 0) {  // AN2056: "more than 4ms" after 13V -> 18V; EN50494: 4..22ms
+		return -1; // Interrupted
+	}
 	log_message( log_module,  MSG_INFO, "UNICABLE: Setting the Voltage 18V and for %d ms\n",(*cmd)->wait);
 
 	while (*cmd) {
@@ -890,7 +1014,9 @@ static int unicable_send_msg(int fd, struct diseqc_cmd **cmd)
 		{ log_message( log_module,  MSG_WARN, "problem sending the DiseqC message\n");
 			return -1;
 		}
-		msleep((*cmd)->wait); // no data in AN2056; i guess any value (2..50)msec should be okay.
+		if (msleep((*cmd)->wait) < 0) { // no data in AN2056; i guess any value (2..50)msec should be okay.
+			return -1; // Interrupted
+		}
 		log_message( log_module,  MSG_INFO, "UNICABLE: Send CMD and wait %d ms\n",(*cmd)->wait);
 		cmd++;
 	}
@@ -1051,7 +1177,9 @@ static int do_diseqc(int fd, unsigned char sat_no,  int switch_no,  char switch_
 			log_message( log_module,  MSG_WARN, "problem to set the 22kHz tone\n");
 			return -1;
 		}
-		msleep(diseqc_time);
+		if (msleep(diseqc_time) < 0) {
+			return -1; // Interrupted
+		}
 		return 0;
 	}
 }
@@ -1237,7 +1365,9 @@ static int do_unicable(int fd, unsigned char sat_no,  int switch_no,  int pin_no
 	// re-sending UNICABLE CMD if requested using diseqc_repeat
 	if (diseqc_repeat)
 	{
-		msleep(100); // wait 100ms between repeated message
+		if (msleep(100) < 0) { // wait 100ms between repeated message
+			return -1; // Interrupted
+		}
 		log_message( log_module,  MSG_INFO, "Wait 100 ms for before re-sending\n");
 		//Framing byte : Command from master, no reply required, repeated transmission : 0xe1
 		if (switch_type=='N') cmd[0]->cmd.msg[0] = 0xe1;
@@ -1256,11 +1386,14 @@ static int do_unicable(int fd, unsigned char sat_no,  int switch_no,  int pin_no
 /** @brief Check the status of the card
 
  */
-int check_status(int fd_frontend,int type,uint32_t lo_frequency, int display_strength)
+int check_status(int fd_frontend,int type,uint32_t lo_frequency, int display_strength, int card_id)
 {
 #ifndef DISABLE_DVB_API
 	int32_t strength;
 	fe_status_t festatus;
+	fe_status_t highest_festatus = 0; // Store the highest level of FE flags
+	time_t start_time = time(NULL);
+	const int LOCK_TIMEOUT_SECONDS = 15;
 	//We keep the old tuning compatibility just in case, as the new one should work it is done via the configure
 
 	struct dvb_frontend_parameters parameters;
@@ -1275,17 +1408,96 @@ int check_status(int fd_frontend,int type,uint32_t lo_frequency, int display_str
 			log_message( log_module,  MSG_ERROR, "FE_READ_STATUS %s\n", strerror(errno));
 			return -1;
 		}
-		print_status(festatus);
+		
+		// Store the highest level of FE flags achieved
+		if (festatus > highest_festatus) {
+			highest_festatus = festatus;
+		}
+		
 		if(display_strength)
 		{
 			strength=0;
+			int strength_dbm = 0;
+			int snr = 0;
+			int snr_db = 0;
+			char status_str[256];
+			
 			if(ioctl(fd_frontend,FE_READ_SIGNAL_STRENGTH,&strength) >= 0)
-				log_message( log_module,  MSG_INFO, "Strength: %10d\n",strength);
-			strength=0;
-			if(ioctl(fd_frontend,FE_READ_SNR,&strength) >= 0)
-				log_message( log_module,  MSG_INFO, "SNR: %10d\n",strength);
+			{
+				strength_dbm = convert_strength_to_dbm(strength);
+			}
+			if(ioctl(fd_frontend,FE_READ_SNR,&snr) >= 0)
+			{
+				snr_db = convert_snr_to_db(snr);
+			}
+			
+			get_status_string(festatus, status_str, sizeof(status_str));
+			
+			log_message( log_module,  MSG_INFO, "card-%d %s  Strength: %10d  Strength (dBm): %10d  SNR: %10d  SNR (dB): %10d\n", 
+						card_id, status_str, strength, strength_dbm, snr, snr_db);
 		}
-		sleep(1);
+		else
+		{
+			// Get current frequency from frontend parameters for status display
+			uint32_t current_freq = 0;
+			struct dvb_frontend_parameters temp_params;
+			int status = ioctl(fd_frontend, FE_GET_FRONTEND, &temp_params);
+			if (status >= 0) {
+				current_freq = temp_params.frequency;
+			}
+			print_status(festatus, card_id, current_freq);
+		}
+		
+		// Check for 15-second timeout
+		time_t current_time = time(NULL);
+		if (current_time - start_time >= LOCK_TIMEOUT_SECONDS) {
+			log_message(log_module, MSG_INFO, "card-%d LOCK timeout after %d seconds, highest FE flags achieved: 0x%x", 
+					   card_id, LOCK_TIMEOUT_SECONDS, highest_festatus);
+			
+			// Print the highest level of FE flags achieved
+			if (highest_festatus & FE_HAS_SIGNAL) {
+				log_message(log_module, MSG_INFO, "card-%d      FE_HAS_SIGNAL : found something above the noise level", card_id);
+			}
+			if (highest_festatus & FE_HAS_CARRIER) {
+				log_message(log_module, MSG_INFO, "card-%d      FE_HAS_CARRIER : found a DVB signal", card_id);
+			}
+			if (highest_festatus & FE_HAS_VITERBI) {
+				log_message(log_module, MSG_INFO, "card-%d      FE_HAS_VITERBI : FEC is stable", card_id);
+			}
+			if (highest_festatus & FE_HAS_SYNC) {
+				log_message(log_module, MSG_INFO, "card-%d      FE_HAS_SYNC : found sync bytes", card_id);
+			}
+			if (highest_festatus & FE_HAS_LOCK) {
+				log_message(log_module, MSG_INFO, "card-%d      FE_HAS_LOCK : everything's working...", card_id);
+			}
+			if (highest_festatus & FE_TIMEDOUT) {
+				log_message(log_module, MSG_INFO, "card-%d      FE_TIMEDOUT : no lock within the last about 2 seconds", card_id);
+			}
+			if (highest_festatus & FE_REINIT) {
+				log_message(log_module, MSG_INFO, "card-%d      FE_REINIT : frontend was reinitialized", card_id);
+			}
+			
+			// Return 0 to indicate we should continue with the next frequency
+			return 0;
+		}
+		
+		// Use non-blocking event-based timing instead of sleep(1)
+		extern event_timing_tracker_t *global_unified_timing_tracker;
+		if (global_unified_timing_tracker) {
+			timing_event_t event;
+			int wait_result = wait_for_timing_event(global_unified_timing_tracker, 
+												  TIMING_EVENT_POLL_INTERVAL, 
+												  TIMING_POLL_INTERVAL_MS, &event);
+			if (wait_result < 0 && wait_result != -1) { // -1 is timeout, which is OK
+				log_message(log_module, MSG_DEBUG, "card-%d timing event wait failed: %d", 
+						   card_id, wait_result);
+			}
+		} else {
+			// Fallback to interruptible sleep if timing tracker not available
+			if (event_sleep_interruptible(MS_TO_US(TIMING_POLL_INTERVAL_MS)) < 0) {
+				return -1; // Interrupted
+			}
+		}
 	} while ((festatus & (FE_HAS_LOCK))==0);
 
 	if (festatus & FE_HAS_LOCK) {
@@ -1301,21 +1513,21 @@ int check_status(int fd_frontend,int type,uint32_t lo_frequency, int display_str
 		{
 			switch(type) {
 			case FE_OFDM:
-				log_message( log_module,  MSG_INFO, "Event:  Frequency: %d\n",parameters.frequency);
+				log_message( log_module,  MSG_INFO, "card-%d Event:  Frequency: %.1f MHz\n",card_id, parameters.frequency/1000000.0);
 				break;
 			case FE_QPSK:
-				log_message( log_module,  MSG_INFO, "Event:  Frequency: %d (or %d)\n",(unsigned int)((parameters.frequency)+lo_frequency),(unsigned int) abs((int)parameters.frequency-(int)lo_frequency));
+				log_message( log_module,  MSG_INFO, "card-%d Event:  Frequency: %.1f MHz (or %.1f MHz)\n",card_id,((parameters.frequency)+lo_frequency)/1000000.0, abs((int)parameters.frequency-(int)lo_frequency)/1000000.0);
 				log_message( log_module,  MSG_INFO, "        SymbolRate: %d\n",parameters.u.qpsk.symbol_rate);
 				log_message( log_module,  MSG_INFO, "        FEC_inner:  %d\n",parameters.u.qpsk.fec_inner);
 				break;
 			case FE_QAM:
-				log_message( log_module,  MSG_INFO, "Event:  Frequency: %d\n",parameters.frequency);
+				log_message( log_module,  MSG_INFO, "card-%d Event:  Frequency: %.1f MHz\n",card_id, parameters.frequency/1000000.0);
 				log_message( log_module,  MSG_INFO, "        SymbolRate: %d\n",parameters.u.qpsk.symbol_rate);
 				log_message( log_module,  MSG_INFO, "        FEC_inner:  %d\n",parameters.u.qpsk.fec_inner);
 				break;
 #ifdef ATSC
 			case FE_ATSC:
-				log_message( log_module,  MSG_INFO, "Event:  Frequency: %d\n",parameters.frequency);
+				log_message( log_module,  MSG_INFO, "card-%d Event:  Frequency: %.1f MHz\n",card_id, parameters.frequency/1000000.0);
 				break;
 #endif
 			default:
@@ -1325,15 +1537,24 @@ int check_status(int fd_frontend,int type,uint32_t lo_frequency, int display_str
 
 		strength=0;
 		if(ioctl(fd_frontend,FE_READ_BER,&strength) >= 0)
-			log_message( log_module,  MSG_INFO, "Bit error rate: %d\n",strength);
+			log_message( log_module,  MSG_INFO, "card-%d Bit error rate: %d\n",card_id, strength);
 
 		strength=0;
+		int strength_dbm = 0;
+		int snr = 0;
+		int snr_db = 0;
+		
 		if(ioctl(fd_frontend,FE_READ_SIGNAL_STRENGTH,&strength) >= 0)
-			log_message( log_module,  MSG_INFO, "Signal strength: %d\n",strength);
-
-		strength=0;
-		if(ioctl(fd_frontend,FE_READ_SNR,&strength) >= 0)
-			log_message( log_module,  MSG_INFO, "SNR: %d\n",strength);
+		{
+			strength_dbm = convert_strength_to_dbm(strength);
+		}
+		if(ioctl(fd_frontend,FE_READ_SNR,&snr) >= 0)
+		{
+			snr_db = convert_snr_to_db(snr);
+		}
+		
+		log_message( log_module,  MSG_INFO, "card-%d Signal strength: %d  Signal strength (dBm): %d  SNR: %d  SNR (dB): %d\n", 
+					card_id, strength, strength_dbm, snr, snr_db);
 	} else {
 		log_message( log_module,  MSG_ERROR, "Not able to lock to the signal on the given frequency\n");
 		return -1;
@@ -1412,7 +1633,7 @@ int tune_it(int fd_frontend, tune_p_t *tuneparams)
 
 	/** @todo here check the capabilities of the card*/
 
-	log_message( log_module,  MSG_INFO, "Using DVB card \"%s\" tuner %d\n",fe_info.name, tuneparams->tuner);
+	log_message( log_module,  MSG_INFO, "card-%d Using DVB card \"%s\" tuner %d\n",tuneparams->card, fe_info.name, tuneparams->tuner);
 
 	// Save the frontend name for easy identification
 	snprintf(tuneparams->fe_name, 256, "%s", fe_info.name);
@@ -1621,7 +1842,7 @@ default:
 			//If the user entered in MHz, we are right now in kHz
 			if (tuneparams->freq < 1000000)
 				tuneparams->freq*=1000;
-			log_message( log_module,  MSG_INFO, "tuning DVB-C to %d Hz, srate=%d\n",(int)tuneparams->freq,tuneparams->srate);
+			log_message( log_module,  MSG_INFO, "card-%d tuning DVB-C to %.1f MHz, srate=%d\n",tuneparams->card,tuneparams->freq/1000000.0,tuneparams->srate);
 			feparams.frequency=(int)tuneparams->freq;
 			feparams.inversion=INVERSION_OFF;
 			feparams.u.qam.symbol_rate = tuneparams->srate;
@@ -1635,7 +1856,7 @@ default:
 			//If the user entered in MHz, we are right now in kHz
 			if (tuneparams->freq < 1000000)
 				tuneparams->freq*=1000;
-			log_message( log_module,  MSG_INFO, "tuning ATSC to %d Hz, modulation=%d\n",(int)tuneparams->freq,tuneparams->modulation);
+			log_message( log_module,  MSG_INFO, "card-%d tuning ATSC to %.1f MHz, modulation=%d\n",tuneparams->card,tuneparams->freq/1000000.0,tuneparams->modulation);
 			feparams.frequency=(int)tuneparams->freq;
 			if(!tuneparams->modulation_set)
 				tuneparams->modulation=ATSC_MODULATION_DEFAULT;
@@ -1644,14 +1865,32 @@ default:
 #endif
 		default:
 			log_message( log_module,  MSG_ERROR, "Unknown FE type : %x. Aborting\n", fe_info.type);
-			set_interrupted(ERROR_TUNE<<8);
-			return -1;
+		set_interrupted(ERROR_TUNE<<8);
+		return -1;
 	}
-	usleep(100000);
+	
+	// Use poll() instead of usleep() for main thread responsiveness
+	extern fds_t *global_main_fds;
+	extern unicast_parameters_t *global_unicast_params;
+	
+	if (global_main_fds && global_unicast_params) {
+		main_thread_sleep_with_poll(global_main_fds, global_unicast_params, TIMING_POLL_INTERVAL_MS);
+	} else {
+		// Fallback to interruptible sleep if main thread context not available
+		if (event_sleep_interruptible(MS_TO_US(TIMING_POLL_INTERVAL_MS)) < 0) {
+			return -1; // Interrupted
+		}
+	}
 
 
 	/* The tuning of the card*/
 	while(1)  {
+		// Check for interrupt signal
+		if (get_interrupted()) {
+			log_message(log_module, MSG_INFO, "Tuning interrupted by signal");
+			break;
+		}
+		
 		if (ioctl(fd_frontend, FE_GET_EVENT, &event) < 0)	//EMPTY THE EVENT QUEUE
 			break;
 	}
@@ -1684,7 +1923,7 @@ default:
     DTV_HIERARCHY
 			 */
 			//DVB api version 5 and delivery system defined, we do DVB-API-5 tuning
-			log_message( log_module,  MSG_INFO, "Tuning With DVB-API version 5. delivery system : %d\n",tuneparams->delivery_system);
+			log_message( log_module,  MSG_INFO, "card-%d Tuning With DVB-API version 5. delivery system : %d\n",tuneparams->card, tuneparams->delivery_system);
 
 #ifdef STREAM_ID
 			int tune_stream_id;
@@ -1801,7 +2040,7 @@ default:
 			}
 			else
 				tuneparams->isdbt_layer = ISDBT_LAYER_ALL;
-			log_message( log_module,  MSG_INFO,  "IDSBT tuning");
+			log_message( log_module,  MSG_INFO,  "card-%d IDSBT tuning", tuneparams->card);
 
 
 			cmdseq->props[commandnum].cmd      = DTV_DELIVERY_SYSTEM;
@@ -1900,7 +2139,7 @@ default:
 
 		}
 #endif
-	return(check_status(fd_frontend,fe_info.type,lo_frequency,tuneparams->display_strenght));
+	return(check_status(fd_frontend,fe_info.type,lo_frequency,tuneparams->display_strenght,tuneparams->card));
 #else
 	return 0;
 #endif

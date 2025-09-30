@@ -44,6 +44,7 @@
 #include "mumudvb.h"
 #include "errors.h"
 #include "log.h"
+#include "bitrate_monitor.h"
 
 #ifdef _WIN32
 #ifndef MSG_NOSIGNAL
@@ -53,11 +54,59 @@
 
 static char *log_module="Unicast : ";
 
+// Global bitrate monitor instance
+static bitrate_monitor_t *global_bitrate_monitor = NULL;
+
 int unicast_queue_remove_data(unicast_queue_header_t *header);
 int unicast_queue_add_data(unicast_queue_header_t *header, unsigned char *data, int data_len);
 int unicast_queue_requeue(unicast_queue_header_t *header, unsigned char *data, int data_len);
 unsigned char *unicast_queue_get_data(unicast_queue_header_t* , int* );
 void unicast_close_connection(unicast_parameters_t *unicast_vars, int Socket);
+
+/** @brief Initialize global bitrate monitor
+ * @return 0 on success, -1 on error
+ */
+int init_global_bitrate_monitor(void)
+{
+    if (global_bitrate_monitor) {
+        return 0; // Already initialized
+    }
+    
+    global_bitrate_monitor = create_bitrate_monitor(32, 256, NULL); // 32 streams, 256 clients
+    if (!global_bitrate_monitor) {
+        log_message(log_module, MSG_ERROR, "Failed to create global bitrate monitor");
+        return -1;
+    }
+    
+    if (start_bitrate_monitoring(global_bitrate_monitor) < 0) {
+        log_message(log_module, MSG_ERROR, "Failed to start global bitrate monitoring");
+        destroy_bitrate_monitor(global_bitrate_monitor);
+        global_bitrate_monitor = NULL;
+        return -1;
+    }
+    
+    log_message(log_module, MSG_INFO, "Global bitrate monitor initialized");
+    return 0;
+}
+
+/** @brief Cleanup global bitrate monitor
+ */
+void cleanup_global_bitrate_monitor(void)
+{
+    if (global_bitrate_monitor) {
+        destroy_bitrate_monitor(global_bitrate_monitor);
+        global_bitrate_monitor = NULL;
+        log_message(log_module, MSG_INFO, "Global bitrate monitor cleaned up");
+    }
+}
+
+/** @brief Get bitrate monitor instance
+ * @return Bitrate monitor instance or NULL
+ */
+bitrate_monitor_t *get_global_bitrate_monitor(void)
+{
+    return global_bitrate_monitor;
+}
 
 /** @brief Send the buffer for the channel
  *
@@ -78,6 +127,31 @@ void unicast_data_send(mumudvb_channel_t *actual_channel, unicast_parameters_t *
 		int data_from_queue;
 		int packets_left;
 		struct timeval tv;
+		
+		// Update stream bitrate if bitrate monitor is available
+		// TODO: Fix frequency and card_id access - these fields don't exist in mumudvb_channel_t
+		// if (global_bitrate_monitor) {
+		//     // Find or register stream for this channel
+		//     int stream_id = -1;
+		//     for (int i = 0; i < global_bitrate_monitor->num_streams; i++) {
+		//         if (global_bitrate_monitor->streams[i].frequency == actual_channel->frequency) {
+		//             stream_id = i;
+		//             break;
+		//         }
+		//     }
+		//     
+		//     if (stream_id < 0) {
+		//         // Register new stream
+		//         stream_id = register_stream_for_monitoring(global_bitrate_monitor, 
+		//             actual_channel->card_id, actual_channel->frequency);
+		//     }
+		//     
+		//     if (stream_id >= 0) {
+		//         // Update stream bitrate
+		//         update_stream_bitrate(global_bitrate_monitor, stream_id, 
+		//             actual_channel->nb_bytes, 1);
+		//     }
+		// }
 
 		actual_client=actual_channel->clients;
 		while(actual_client!=NULL)
@@ -85,11 +159,40 @@ void unicast_data_send(mumudvb_channel_t *actual_channel, unicast_parameters_t *
 			buffer=actual_channel->buf;
 			buffer_len=actual_channel->nb_bytes;
 			data_from_queue=0;
+			
+			// Check if client should be throttled based on bitrate monitoring
+			int should_throttle = 0;
+			int client_sync_id = -1;
+			if (global_bitrate_monitor) {
+				// Find client sync ID
+				for (int i = 0; i < global_bitrate_monitor->num_clients; i++) {
+					if (global_bitrate_monitor->clients[i].socket_fd == actual_client->Socket) {
+						client_sync_id = i;
+						break;
+					}
+				}
+				
+				if (client_sync_id >= 0) {
+					should_throttle = should_throttle_client(global_bitrate_monitor, client_sync_id);
+					
+					// Update client queue statistics
+					global_bitrate_monitor->clients[client_sync_id].queue_packets = actual_client->queue.packets_in_queue;
+					global_bitrate_monitor->clients[client_sync_id].queue_bytes = actual_client->queue.data_bytes_in_queue;
+				}
+			}
+			
 			if(actual_client->queue.packets_in_queue!=0)
 			{
 				//already some packets in the queue we enqueue the new one and try to send the queued ones
 				data_from_queue=1;
 				packets_left=UNICAST_MULTIPLE_QUEUE_SEND;
+				
+				// Apply throttling if needed
+				if (should_throttle) {
+					packets_left = packets_left / 2; // Reduce send rate by 50%
+					if (packets_left < 1) packets_left = 1;
+				}
+				
 				if((actual_client->queue.data_bytes_in_queue+buffer_len)< unicast_vars->queue_max_size)
 					unicast_queue_add_data(&actual_client->queue, buffer, buffer_len );
 				else
@@ -111,6 +214,14 @@ void unicast_data_send(mumudvb_channel_t *actual_channel, unicast_parameters_t *
 			{
 				//we send the data
 				written_len=send(actual_client->Socket,(const char *)buffer, buffer_len,MSG_NOSIGNAL);
+				
+				// Update client send statistics for bitrate monitoring
+				if (global_bitrate_monitor && client_sync_id >= 0) {
+					int send_errors = (written_len < 0) ? 1 : 0;
+					update_client_send_stats(global_bitrate_monitor, client_sync_id,
+						written_len > 0 ? written_len : 0, 1, send_errors);
+				}
+				
 				//We check if all the data was successfully written
 				if(written_len<buffer_len)
 				{

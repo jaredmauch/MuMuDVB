@@ -124,6 +124,7 @@ void autoconf_get_pmt_pids(auto_p_t *auto_p, mumudvb_ts_packet_t *pmt, int *pids
 		pids[*num_pids]=pid;
 		pids_type[*num_pids]=pid_type;
 		snprintf(temp_pids_language[*num_pids],4,"%s",language);
+		temp_pids_language[*num_pids][3] = '\0';
 		(*num_pids)++;
 
 		// get the EMM PID
@@ -180,6 +181,7 @@ void autoconf_get_pmt_pids(auto_p_t *auto_p, mumudvb_ts_packet_t *pmt, int *pids
 
 		// Default language value if not found
 		snprintf(language,4,"%s","---");
+		language[3] = '\0';
 		// Default, no position found
 		pos=0;
 
@@ -369,6 +371,7 @@ void autoconf_get_pmt_pids(auto_p_t *auto_p, mumudvb_ts_packet_t *pmt, int *pids
 		pids[*num_pids]=pid;
 		pids_type[*num_pids]=pid_type;
 		snprintf(temp_pids_language[*num_pids],4,"%s",language);
+		temp_pids_language[*num_pids][3] = '\0';
 		(*num_pids)++;
 		if (*num_pids >= MAX_PIDS)
 		{
@@ -445,6 +448,7 @@ int autoconf_read_pmt(auto_p_t *auto_p, mumudvb_channel_t *channel, mumudvb_ts_p
 		temp_pids[temp_num_pids]=channel->pid_i.pcr_pid;
 		temp_pids_type[temp_num_pids]=PID_PCR;
 		snprintf(temp_pids_language[temp_num_pids],4,"%s","---");
+		temp_pids_language[temp_num_pids][3] = '\0';
 		temp_num_pids++;
 	}
 	log_message( log_module,  MSG_DEBUG, "PCR pid %d\n",channel->pid_i.pcr_pid);
@@ -512,6 +516,7 @@ int autoconf_read_pmt(auto_p_t *auto_p, mumudvb_channel_t *channel, mumudvb_ts_p
 			channel->pid_i.pids[i+1]=temp_pids[i];
 			channel->pid_i.pids_type[i+1]=temp_pids_type[i];
 			snprintf(channel->pid_i.pids_language[i+1],4,"%s",temp_pids_language[i]);
+			channel->pid_i.pids_language[i+1][3] = '\0';
 		}
 		channel->pid_i.num_pids=temp_num_pids+1;
 

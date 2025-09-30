@@ -69,4 +69,8 @@ int sockaddr_to_string(struct sockaddr_storage *sa, char *pDest, size_t len);
 int is_multicast(struct sockaddr_storage *sa);
 int makeUDPclientsocket(char *szAddr, unsigned short port);
 
+// Forward declaration for TCP optimization function
+typedef struct unicast_parameters_t unicast_parameters_t;
+int configure_tcp_optimizations(int socket, int is_listening_socket, unicast_parameters_t *unicast_vars);
+
 #endif

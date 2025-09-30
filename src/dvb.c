@@ -132,6 +132,66 @@ set_ts_filt (int fd, uint16_t pid)
 }
 
 /**
+ * @brief Convert signal strength to dBm
+ * According to TBS documentation, signal strength is in '-1dB' format
+ * (a value of 42 is -42dBm)
+ * @param strength the raw signal strength value
+ * @return the signal strength in dBm
+ */
+int convert_strength_to_dbm(int strength)
+{
+	/* Check if the frontend supports dBm reporting */
+	/* This should be checked using FE_CAP_DBM in fe_caps, but for now */
+	/* we'll use heuristics based on the value range */
+	
+	if (strength < 1000) {
+		/* Small values suggest direct dBm reporting (TBS cards with dbm=1) */
+		/* A value of 42 means -42dBm */
+		return -strength;
+	} else if (strength <= 100) {
+		/* Values 0-100 suggest percentage scale */
+		/* Convert percentage to approximate dBm range */
+		/* 0% = -100dBm (no signal), 100% = -20dBm (excellent) */
+		int dbm = -100 + (strength * 80) / 100;
+		return dbm;
+	} else {
+		/* Large values suggest raw scale (0-65535) */
+		/* Convert from 0-65535 scale to approximate dBm range */
+		/* Typical DVB range: -100dBm (no signal) to -20dBm (excellent) */
+		int dbm = -100 + (strength * 80) / 65535;
+		return dbm;
+	}
+}
+
+/**
+ * @brief Convert SNR to dB
+ * According to TBS documentation, SNR can be in 0.1dB EsN0 format
+ * (a value of 100 is 10dB Es/N0)
+ * @param snr the raw SNR value
+ * @return the SNR in dB (multiplied by 10 for 0.1dB precision)
+ */
+int convert_snr_to_db(int snr)
+{
+	/* Check the SNR value range to determine the correct conversion */
+	if (snr < 1000) {
+		/* Small values suggest 0.1dB EsN0 format (TBS cards with esno=1) */
+		/* A value of 100 means 10dB Es/N0 */
+		/* Convert from 0.1dB units to dB */
+		return snr / 10;
+	} else if (snr <= 100) {
+		/* Values 0-100 suggest percentage scale */
+		/* Convert percentage to approximate dB range */
+		/* 0% = 0dB, 100% = 30dB */
+		return (snr * 30) / 100;
+	} else {
+		/* Large values suggest raw scale (0-65535) */
+		/* Convert from 0-65535 scale to approximate dB range */
+		/* Map to 0-30dB range */
+		return (snr * 30) / 65535;
+	}
+}
+
+/**
  * @brief Show the reception power.
  * This information is not alway reliable
  * @param fds the file descriptors of the card
@@ -153,11 +213,13 @@ void *show_power_func(void* arg)
 	strengthparams->ber = 0;
 	strengthparams->snr = 0;
 	strengthparams->ub = 0;
+	strengthparams->dbm = 0;
+	strengthparams->snr_db = 0;
 	strengthparams->ts_discontinuities = 0; //could be initialized somewhere else but sounds fine here
 	strengthparams->lock_loss_events = 0;
 	memset(&festatus_old,0,sizeof(fe_status_t));
 	lock_lost=0;
-	while(!strengthparams->tune_p->strengththreadshutdown)
+	while(!strengthparams->tune_p->strengththreadshutdown && !get_interrupted())
 	{
 		if(strengthparams->tune_p->card_tuned)
 		{
@@ -184,7 +246,11 @@ void *show_power_func(void* arg)
 				}
 			}
 			else
+			{
 				meas_strength_ok=1;
+				/* Calculate dBm from signal strength */
+				strengthparams->dbm = convert_strength_to_dbm(strengthparams->strength);
+			}
 			if (ioctl (strengthparams->fds->fd_frontend, FE_READ_SNR, &strengthparams->snr) < 0)
 			{
 				if(meas_snr_ok)
@@ -194,7 +260,11 @@ void *show_power_func(void* arg)
 				}
 			}
 			else
+			{
 				meas_snr_ok=1;
+				/* Calculate SNR in dB from raw SNR value */
+				strengthparams->snr_db = convert_snr_to_db(strengthparams->snr);
+			}
 			if (ioctl (strengthparams->fds->fd_frontend, FE_READ_UNCORRECTED_BLOCKS, &strengthparams->ub) < 0 )
 			{
 				if(meas_ub_ok)
@@ -209,8 +279,27 @@ void *show_power_func(void* arg)
 		}
 		if(strengthparams->tune_p->display_strenght && strengthparams->tune_p->card_tuned)
 		{
-			log_message( log_module,  MSG_INFO, "Bit error rate: %10d Signal strength: %10d SNR: %10d Uncorrected blocks: %10d\n", strengthparams->ber,strengthparams->strength,strengthparams->snr,strengthparams->ub);
-			log_message( log_module,  MSG_INFO, "ts_discontinuities %10u",strengthparams->ts_discontinuities);
+			// Check if card is in use before showing signal strength
+			// For now, we'll show it if card is tuned (card_tuned is true)
+			// In the future, this could be enhanced to check for active clients
+			
+			char status_str[64];
+			get_status_string(strengthparams->festatus, status_str, sizeof(status_str));
+			
+			// Only show BER if it's not -1 (meaningless value)
+			if(strengthparams->ber != -1) {
+				log_message( log_module,  MSG_INFO, "card-%d %s BER:%6d Str:%6d SNR:%6d UB:%6d dBm:%6d SNR(dB):%6d (%.1f MHz)\n", 
+					strengthparams->tune_p->card, status_str, strengthparams->ber, strengthparams->strength, 
+					strengthparams->snr, strengthparams->ub, strengthparams->dbm, strengthparams->snr_db, 
+					strengthparams->tune_p->freq/1000000.0);
+			} else {
+				log_message( log_module,  MSG_INFO, "card-%d %s Str:%6d SNR:%6d UB:%6d dBm:%6d SNR(dB):%6d (%.1f MHz)\n", 
+					strengthparams->tune_p->card, status_str, strengthparams->strength, strengthparams->snr, 
+					strengthparams->ub, strengthparams->dbm, strengthparams->snr_db, 
+					strengthparams->tune_p->freq/1000000.0);
+			}
+			if(strengthparams->ts_discontinuities > 0)
+				log_message( log_module,  MSG_INFO, "card-%d ts_discontinuities: %u", strengthparams->tune_p->card, strengthparams->ts_discontinuities);
 
 			log_message( log_module,  MSG_FLOOD, "Timing: ioctls took %ld micro seconds\n",mumu_timing());
 		}
@@ -225,7 +314,7 @@ void *show_power_func(void* arg)
 						strengthparams->lock_loss_events++;
 					} else
 						log_message( log_module,  MSG_INFO, "Card is still not locked but status changed. Detailed status");
-					print_status(strengthparams->festatus);
+					print_status(strengthparams->festatus, strengthparams->tune_p->card, strengthparams->tune_p->freq);
 					festatus_old = strengthparams->festatus;
 					lock_lost=1;
 				}
@@ -237,7 +326,9 @@ void *show_power_func(void* arg)
 			}
 		}
 		for(i=0;i<wait_time && !strengthparams->tune_p->strengththreadshutdown;i++)
-			usleep(100000);
+			if (event_sleep_interruptible(MS_TO_US(TIMING_POLL_INTERVAL_MS)) < 0) {
+				return NULL; // Interrupted
+			}
 	}
 #else
 	(void)arg;
@@ -257,6 +348,8 @@ void *show_power_func(void* arg)
 int
 create_card_fd(char *base_path, int tuner, uint8_t *asked_pid, fds_t *fds)
 {
+	// Debug: Show device path being used
+	log_message(log_module, MSG_DEBUG, "create_card_fd: Using base_path: %s, tuner: %d", base_path, tuner);
 
 	int curr_pid = 0;
 	char *demuxdev_name=NULL;
@@ -270,8 +363,10 @@ create_card_fd(char *base_path, int tuner, uint8_t *asked_pid, fds_t *fds)
 	// if demux<tuner> not found, attempt to use demux0 (for cards with multiple frontends like CXD2837ER)
 	if (!file_exists(demuxdev_name) && tuner > 0) {
 		asprintf_ret=asprintf(&demuxdev_name,"%s/%s%d",base_path,DEMUX_DEV_NAME,0);
-		if(asprintf_ret==-1)
+		if(asprintf_ret==-1) {
+			free(demuxdev_name);
 			return -1;
+		}
 	}
 
 	for(curr_pid=0;curr_pid<8193;curr_pid++)
@@ -279,7 +374,7 @@ create_card_fd(char *base_path, int tuner, uint8_t *asked_pid, fds_t *fds)
 		//we check if we need to open the file descriptor (some cards are limited)
 		if ((asked_pid[curr_pid] != 0) && (fds->fd_demuxer[curr_pid] == 0)) {
 #ifndef DISABLE_DVB_API
-			if ((fds->fd_demuxer[curr_pid] = open(demuxdev_name, O_RDWR)) < 0) {
+			if ((fds->fd_demuxer[curr_pid] = open(demuxdev_name, O_RDWR | O_NONBLOCK)) < 0) {
 				log_message(log_module, MSG_ERROR, "FD PID %i: ", curr_pid);
 				log_message(log_module, MSG_ERROR, "DEMUX DEVICE: %s : %s\n", demuxdev_name, strerror(errno));
 				free(demuxdev_name);
@@ -291,23 +386,33 @@ create_card_fd(char *base_path, int tuner, uint8_t *asked_pid, fds_t *fds)
 		}
 
 	asprintf_ret=asprintf(&dvrdev_name,"%s/%s%d",base_path,DVR_DEV_NAME,tuner);
-	if(asprintf_ret==-1)
+	if(asprintf_ret==-1) {
+		free(demuxdev_name);
 		return -1;
+	}
 
 	// if dvr<tuner> not found, attempt to use dvr0 (for cards with multiple frontends like CXD2837ER)
 	if (!file_exists(dvrdev_name) && tuner > 0) {
 		asprintf_ret=asprintf(&dvrdev_name,"%s/%s%d",base_path,DVR_DEV_NAME,0);
-		if(asprintf_ret==-1)
-			return -1;
-	}
-
-	if (fds->fd_dvr==0)  //this function can be called more than one time, we check if we opened it before
-		if ((fds->fd_dvr = open (dvrdev_name, O_RDONLY | O_NONBLOCK)) < 0)
-		{
-			log_message( log_module,  MSG_ERROR, "DVR DEVICE: %s : %s\n", dvrdev_name, strerror(errno));
+		if(asprintf_ret==-1) {
+			free(demuxdev_name);
 			free(dvrdev_name);
 			return -1;
 		}
+	}
+	
+	// Debug: Show actual device paths being opened
+	log_message(log_module, MSG_DEBUG, "create_card_fd: Opening DVR device: %s", dvrdev_name);
+
+	if (fds->fd_dvr==0) {  //this function can be called more than one time, we check if we opened it before
+		if ((fds->fd_dvr = open (dvrdev_name, O_RDONLY | O_NONBLOCK)) < 0)
+		{
+			log_message( log_module,  MSG_ERROR, "DVR DEVICE: %s : %s (fd=%d)\n", dvrdev_name, strerror(errno), fds->fd_dvr);
+			free(demuxdev_name);
+			free(dvrdev_name);
+			return -1;
+		}
+	}
 
 
 	free(dvrdev_name);
@@ -387,7 +492,9 @@ void *read_card_thread_func(void* arg)
 	int throwing_packets=0;
 	log_message( log_module,  MSG_DEBUG, "Reading thread start\n");
 
-	usleep(100000); //some waiting to be sure the main program is waiting //it is probably useless
+	if (event_sleep_interruptible(MS_TO_US(TIMING_POLL_INTERVAL_MS)) < 0) { //some waiting to be sure the main program is waiting //it is probably useless
+		return NULL; // Interrupted
+	}
 	while(!threadparams->threadshutdown&& !get_interrupted())
 	{
 		//Poll the DVB descriptors
@@ -423,9 +530,17 @@ void *read_card_thread_func(void* arg)
 		}
 		throwing_packets=0;
 		pthread_mutex_lock(&threadparams->carddatamutex);
-		threadparams->card_buffer->bytes_in_write_buffer+=card_read(threadparams->fds->fd_dvr,
+		int bytes_read = card_read(threadparams->fds->fd_dvr,
 				threadparams->card_buffer->writing_buffer+threadparams->card_buffer->bytes_in_write_buffer,
 				threadparams->card_buffer);
+		
+		if (bytes_read == -1) {
+			// Device error - signal main thread to handle reconnection
+			log_message(log_module, MSG_ERROR, "DVB device error in read thread (fd_dvr=%d), signaling main thread...\n", threadparams->fds->fd_dvr);
+			set_interrupted(ERROR_GENERIC);
+		} else {
+			threadparams->card_buffer->bytes_in_write_buffer += bytes_read;
+		}
 
 		if(threadparams->main_waiting)
 		{
@@ -461,14 +576,85 @@ int card_read(int fd_dvr, unsigned char *dest_buffer, card_buffer_t *card_buffer
 		{
 			log_message( log_module,  MSG_WARN,"Error : DVR buffer overrun \n");
 			card_buffer->overflow_number++;
-		} else if (errno==ENODEV || errno==EFAULT || errno==EBADF) {
-        		log_message( log_module,  MSG_ERROR,"Error : DVR device unrecoverable error : %s\n",strerror(errno));
-        		exit (ERROR_GENERIC);
-		} else if(errno!=EAGAIN)
+	} else if (errno==ENODEV || errno==EFAULT || errno==EBADF) {
+        		log_message( log_module,  MSG_ERROR,"Error : DVR device unrecoverable error : %s (fd=%d)\n",strerror(errno), fd_dvr);
+        		return -1; // Return error instead of exiting
+	} else if(errno!=EAGAIN)
 			log_message( log_module,  MSG_WARN,"Error : DVR Read error : %s \n",strerror(errno));
 		return 0;
 	}
 	return bytes_read;
+}
+
+/**
+ * @brief Attempt to reconnect to DVB device after a failure
+ * @param fds pointer to file descriptors structure
+ * @param tune_p pointer to tuning parameters
+ * @param asked_pid pointer to asked PIDs array
+ * @return 1 on success, -1 on failure
+ */
+int reconnect_dvb_device(fds_t *fds, tune_p_t *tune_p, uint8_t *asked_pid)
+{
+	log_message(log_module, MSG_INFO, "Attempting to reconnect to DVB device...\n");
+	
+	// Close existing file descriptors
+	close_card_fd(fds);
+	
+	// Wait a bit before retrying
+	if (event_sleep_interruptible(2000000) < 0) { // 2 seconds
+		return -1; // Interrupted
+	}
+	
+	// Try to reopen the device
+	int retry_count = 0;
+	int max_retries = 5;
+	
+	while (retry_count < max_retries) {
+		log_message(log_module, MSG_INFO, "Reconnection attempt %d/%d\n", retry_count + 1, max_retries);
+		
+		// Reopen frontend
+		if (open_fe(&fds->fd_frontend, tune_p->card_dev_path, tune_p->tuner, 1, 0) < 0) {
+			log_message(log_module, MSG_WARN, "Failed to reopen frontend: %s\n", strerror(errno));
+			retry_count++;
+			if (event_sleep_interruptible(3000000) < 0) { // 3 seconds
+				return -1; // Interrupted
+			}
+			continue;
+		}
+		
+		// Retune the device
+		if (tune_it(fds->fd_frontend, tune_p) < 0) {
+			log_message(log_module, MSG_WARN, "Failed to retune device: %s\n", strerror(errno));
+			close(fds->fd_frontend);
+			fds->fd_frontend = 0;
+			retry_count++;
+			if (event_sleep_interruptible(3000000) < 0) { // 3 seconds
+				return -1; // Interrupted
+			}
+			continue;
+		}
+		
+		// Recreate card file descriptors
+		if (create_card_fd(tune_p->card_dev_path, tune_p->tuner, asked_pid, fds) < 0) {
+			log_message(log_module, MSG_WARN, "Failed to recreate card file descriptors: %s\n", strerror(errno));
+			close(fds->fd_frontend);
+			fds->fd_frontend = 0;
+			retry_count++;
+			if (event_sleep_interruptible(3000000) < 0) { // 3 seconds
+				return -1; // Interrupted
+			}
+			continue;
+		}
+		
+		// Set filters again
+		set_filters(asked_pid, fds);
+		
+		log_message(log_module, MSG_INFO, "Successfully reconnected to DVB device\n");
+		return 1;
+	}
+	
+	log_message(log_module, MSG_ERROR, "Failed to reconnect after %d attempts\n", max_retries);
+	return -1;
 }
 
 
@@ -589,6 +775,113 @@ void show_card_capabilities( int card, int tuner )
 /** @brief : List the DVB cards of the system and their capabilities
  *
  */
+/** @brief Get frontend type for a specific card
+ * @param card Card number
+ * @param tuner Tuner number (usually 0)
+ * @return Frontend type (FE_OFDM, FE_QPSK, FE_QAM, FE_ATSC) or -1 on error
+ */
+int get_card_frontend_type(int card, int tuner)
+{
+#ifndef DISABLE_DVB_API
+	int frontend_fd;
+	int i_ret;
+	char card_dev_path[256];
+	
+	strncpy(card_dev_path, DVB_DEV_PATH, 256);
+	char number[10];
+	sprintf(number, "%d", card);
+	int l = sizeof(card_dev_path);
+	mumu_string_replace(card_dev_path, &l, 0, "%card", number);
+	
+	// Open the frontend
+	if (!open_fe(&frontend_fd, card_dev_path, tuner, 0, 0)) {
+		return -1;
+	}
+	
+	// Get frontend info
+	struct dvb_frontend_info fe_info;
+	i_ret = ioctl(frontend_fd, FE_GET_INFO, &fe_info);
+	close(frontend_fd);
+	
+	if (i_ret < 0) {
+		log_message(log_module, MSG_DEBUG, "FE_GET_INFO failed for card %d: %s", card, strerror(errno));
+		return -1;
+	}
+	
+	return fe_info.type;
+#else
+	(void)card;
+	(void)tuner;
+	return -1;
+#endif
+}
+
+/** @brief Detect available DVB cards
+ * @param cards Output array to store detected card numbers
+ * @param max_cards Maximum number of cards to detect
+ * @return Number of cards detected, or -1 on error
+ */
+int detect_available_cards(int *cards, int max_cards)
+{
+#ifndef DISABLE_DVB_API
+	DIR *dvb_dir;
+	int card_number;
+	int num_cards = 0;
+	struct dirent *d_adapter;
+	
+	if (!cards || max_cards <= 0) {
+		return -1;
+	}
+	
+	dvb_dir = opendir ("/dev/dvb/");
+	if (dvb_dir == NULL)
+	{
+		log_message( log_module,  MSG_DEBUG, "Cannot open /dev/dvb : %s\n", strerror (errno));
+		return -1;
+	}
+
+	while ((d_adapter=readdir(dvb_dir))!=NULL)
+	{
+		if(strlen(d_adapter->d_name)<8)
+			continue;
+		if(strncmp(d_adapter->d_name,"adapter",7))
+			continue;
+		card_number= atoi(d_adapter->d_name+7);
+		log_message( log_module,  MSG_DEBUG, "found adapter %d\n", card_number);
+		cards[num_cards]=card_number;
+		num_cards++;
+		if(num_cards >= max_cards)
+		{
+			log_message( log_module, MSG_WARN, "Maximum number of cards (%d) reached, some cards may not be detected", max_cards);
+			break;
+		}
+	}
+	
+	// Sort the detected adapters by adapter number
+	for(int i = 0; i < num_cards - 1; i++) {
+		for(int j = i + 1; j < num_cards; j++) {
+			if(cards[i] > cards[j]) {
+				int temp = cards[i];
+				cards[i] = cards[j];
+				cards[j] = temp;
+			}
+		}
+	}
+	
+	// Debug: Show all detected adapters
+	log_message( log_module,  MSG_INFO, "Total adapters detected: %d", num_cards);
+	for(int i = 0; i < num_cards; i++) {
+		log_message( log_module,  MSG_INFO, "Adapter %d: %d", i, cards[i]);
+	}
+	closedir(dvb_dir);
+	
+	log_message( log_module, MSG_DEBUG, "Detected %d DVB cards", num_cards);
+	return num_cards;
+#else
+	return -1;
+#endif
+}
+
 void list_dvb_cards(void)
 {
 #ifndef DISABLE_DVB_API

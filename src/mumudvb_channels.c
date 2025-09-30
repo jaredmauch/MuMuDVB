@@ -28,6 +28,7 @@
 
 #include "mumudvb.h"
 #include "log.h"
+#include "unified_channel_storage_v2.h"
 #include "errors.h"
 #include "dvb.h"
 #include "rtp.h"
@@ -47,6 +48,9 @@
 #ifdef ENABLE_SCAM_SUPPORT
 #include "scam_common.h"
 #endif
+
+// Global unified system reference (will be set by main system)
+extern unified_channel_system_t *global_unified_system;
 
 #ifdef _MSC_VER
 #define strtok_r strtok_s
@@ -279,6 +283,26 @@ void update_chan_net(mumu_chan_p_t *chan_p, auto_p_t *auto_p, multi_p_t *multi_p
 		if(chan_p->channels[ichan].channel_ready!=ALMOST_READY)
 			continue;
 		chan_p->channels[ichan].channel_ready=READY;
+		
+		// Store channel in unified storage if available
+		if (global_unified_system) {
+			// Get current frequency and card ID from function parameters
+			double current_frequency = 0.0;
+			int card_id = card; // Use the card parameter
+			
+			// For now, we don't have frequency information in this function
+			// This will be set to 0, which means the channel won't be stored
+			// In a real implementation, we'd need to pass frequency as a parameter
+			// or get it from somewhere else
+			
+			// Add to unified storage v2 (only if we have frequency info)
+			if (current_frequency > 0 && card_id >= 0 && global_unified_system->unified_storage_v2) {
+				add_channel_to_frequency_v2(global_unified_system->unified_storage_v2, 
+										   current_frequency, 
+										   &chan_p->channels[ichan], 
+										   0); // 0 = not discovered via parallel
+			}
+		}
 		//RTP init (even if no RTP, costs nothing)
 		if(chan_p->channels[ichan].buf_with_rtp_header[0]!=128)
 			init_rtp_header(&chan_p->channels[ichan]); //We init the RTP header in all cases
@@ -374,8 +398,7 @@ void update_chan_net(mumu_chan_p_t *chan_p, auto_p_t *auto_p, multi_p_t *multi_p
 				//SID
 				sprintf(number,"%04x",chan_p->channels[ichan].service_id);
 				mumu_string_replace(ip,&len,0,"%sid",number);
-				strncpy(chan_p->channels[ichan].ip6Out,ip,IPV6_CHAR_LEN);
-				chan_p->channels[ichan].ip6Out[IPV6_CHAR_LEN-1]='\0';
+				snprintf(chan_p->channels[ichan].ip6Out, IPV6_CHAR_LEN, "%.*s", IPV6_CHAR_LEN-1, ip);
 			}
 		}
 
@@ -470,9 +493,9 @@ void update_chan_net(mumu_chan_p_t *chan_p, auto_p_t *auto_p, multi_p_t *multi_p
 
 
 /** Update the filters of the channels, this function also searches for closed PIDs */
-void update_chan_filters(mumu_chan_p_t *chan_p, char *card_base_path, int tuner, fds_t *fds)
+void update_chan_filters(mumu_chan_p_t *chan_p, char *card_base_path, int tuner, fds_t *fds, int card_id)
 {
-	log_message( log_module, MSG_INFO,"Looking through all services to update their filters");
+	log_message( log_module, MSG_INFO,"card-%d Looking through all services to update their filters", card_id);
 	pthread_mutex_lock(&chan_p->lock);
 	uint8_t asked_pid[8193];
 	//Clear

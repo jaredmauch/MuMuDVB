@@ -1,0 +1,224 @@
+.\"                                      Hey, EMACS: -*- nroff -*-
+.\" First parameter, NAME, should be all caps
+.\" Second parameter, SECTION, should be 1-8, maybe w/ subsection
+.\" other parameters are allowed: see man(7), man(1)
+.TH MUMUDVB 8 "@DATE@" "MuMuDVB @VERSION@"
+.\" Please adjust this date whenever revising the manpage.
+.\"
+.\" Some roff macros, for reference:
+.\" .nh        disable hyphenation
+.\" .hy        enable hyphenation
+.\" .ad l      left justify
+.\" .ad b      justify to both left and right margins
+.\" .nf        disable filling
+.\" .fi        enable filling
+.\" .br        insert line break
+.\" .sp <n>    insert n+1 empty lines
+.\" for manpage-specific macros, see man(7)
+.SH NAME
+MuMuDVB \- Multicast a DVB transponder over multiples ip addresses
+
+.SH SYNOPSIS
+.B mumudvb
+.RI [ options ]
+.B -c
+conf_file
+.br
+.B mumudvb
+.RI [ options ]
+\-\-config
+conf_file
+
+.SH DESCRIPTION
+\fBMuMuDVB\fP is a program that can redistribute stream from DVB on a network, in multicast or in HTTP unicast. Its main feature is to take a whole transponder and put each channel on a different multicast IP.
+
+MuMuDVB supports both IPv4 and IPv6 multicast, as well as HTTP unicast streaming. It can automatically detect and configure channels, handle scrambled content with CAM/SCAM support, and provides various output formats including HLS (HTTP Live Streaming).
+
+Website : @PACKAGE_URL@
+
+.SH OPTIONS
+The following options are provided by MuMuDVB : 
+.TP
+.B \-c, \-\-config conf_file
+Path to the config file
+.TP
+.B \-s, \-\-signal
+Display signal power
+.TP
+.B \-t, \-\-traffic
+Display channels traffic
+.TP
+.B \-l, \-\-list\-cards
+List the DVB cards and exit
+.TP
+.B \-\-card
+The DVB card to use (overridden by the configuration file)
+.TP
+.B \-\-server_id
+The server id (for autoconfiguration, overridden by the configuration file)
+.TP
+.B \-d, \-\-debug
+Don't daemonize
+.TP
+.B \-h, \-\-help
+Display Help
+.TP
+.B \-V, \-\-version
+Show version and build information
+.TP
+.B \-v
+More Verbose
+.TP
+.B \-q
+More quiet
+.TP
+.B \-\-dumpfile
+Debug option : Dump the stream into the specified file
+.TP
+.B \-j, \-\-japan
+Enable processing ARIB encoding in SI/EPG data (requires ARIB support)
+
+.SH CONFIGURATION
+MuMuDVB uses a configuration file to specify its behavior. The main configuration parameters include:
+
+.TP
+.B freq
+Transponder frequency (in MHz for satellite, Hz/kHz/MHz for terrestrial/cable) - MANDATORY
+.TP
+.B card
+DVB card number to use (default: 0, use 'auto' for auto-detection)
+.TP
+.B tuner
+DVB tuner number to use (default: 0)
+.TP
+.B delivery_system
+Delivery system: DVBT, DVBT2, DVBS, DVBS2, DVBC_ANNEX_AC, DVBC_ANNEX_B, ATSC, ISDBT
+.TP
+.B modulation
+Modulation type: QPSK, QAM16, QAM32, QAM64, QAM128, QAM256, QAMAUTO, VSB8, VSB16, 8PSK, 16APSK, 32APSK, DQPSK
+.TP
+.B autoconfiguration
+Enable automatic channel detection: none, partial, full (default: none)
+.TP
+.B multicast_ipv4
+Enable IPv4 multicast streaming (default: 0, disabled)
+.TP
+.B multicast_ipv6
+Enable IPv6 multicast streaming (default: 0, disabled)
+.TP
+.B unicast
+Enable HTTP unicast streaming (default: 0, disabled)
+.TP
+.B port_http
+HTTP port for unicast streaming (default: 4242)
+.TP
+.B common_port
+Default port for multicast streaming (default: 1234)
+.TP
+.B multicast_ttl
+Multicast Time To Live (default: 2)
+.TP
+.B tuning_timeout
+Tuning timeout in seconds (default: 300)
+.TP
+.B timeout_no_diff
+Kill MuMuDVB if no channels streamed for this time in seconds (default: 600)
+.TP
+.B tuning_no_diff
+Start tuning loop if no channels streamed for this time in seconds (default: 0)
+.TP
+.B check_status
+Check card status and display message if lock is lost (default: 1)
+.TP
+.B new_channel
+Start definition of a new channel
+.TP
+.B name
+Channel name (required for each channel)
+.TP
+.B service_id
+Service ID for the channel (required for each channel)
+.TP
+.B pids
+Space-separated list of PIDs to stream for this channel
+.TP
+.B ip
+IPv4 multicast address for this channel
+.TP
+.B ip6
+IPv6 multicast address for this channel
+.TP
+.B port
+Port for this channel (overrides common_port)
+.TP
+.B unicast_port
+HTTP port for this channel (overrides port_http)
+
+For satellite reception, additional parameters include:
+.TP
+.B pol
+Polarization: h (horizontal), v (vertical), l (left circular), r (right circular)
+.TP
+.B srate
+Symbol rate (required for satellite)
+.TP
+.B lnb_type
+LNB type: universal (default), standard
+.TP
+.B sat_number
+Satellite number for DiSEqC switching (0-4)
+.TP
+.B coderate
+Forward Error Correction: none, 1/2, 2/3, 3/4, 4/5, 5/6, 6/7, 7/8, 8/9, auto
+
+For terrestrial reception, additional parameters include:
+.TP
+.B bandwidth
+Bandwidth: 8MHz, 7MHz, 6MHz, auto (DVB-T2: 5MHz, 10MHz, 1.712MHz)
+.TP
+.B trans_mode
+Transmission mode: 2k, 8k, auto (DVB-T2: 4k, 16k, 32k)
+.TP
+.B guardinterval
+Guard interval: 1/32, 1/16, 1/8, 1/4, auto (DVB-T2: 1/128, 19/128, 19/256)
+
+For a complete list of all configuration options, see the README_CONF.html documentation.
+
+.SH EXAMPLES
+.TP
+Basic DVB-S2 satellite reception:
+.B mumudvb -c /etc/mumudvb/satellite.conf
+.TP
+ATSC terrestrial reception with autoconfiguration:
+.B mumudvb -c /etc/mumudvb/atsc.conf
+.TP
+HTTP unicast streaming:
+.B mumudvb -c /etc/mumudvb/unicast.conf
+
+.SH FILES
+.TP
+.B /etc/mumudvb/
+Configuration files directory
+.TP
+.B /var/log/mumudvb/
+Log files directory (if configured)
+.TP
+.B /var/www/html/hls/
+HLS output directory (if HLS is enabled)
+
+.SH SEE ALSO
+The program is documented in README and README_CONF for detailed configuration information.
+
+.SH BUGS
+Report bugs to @PACKAGE_BUGREPORT@
+
+.SH AUTHOR
+Upstream author:
+.br
+Brice DUBOST <@PACKAGE_BUGREPORT@>
+.br
+Acknowledgements:
+.br
+All the contributors (see github), all users and bug reporters, Dave CHAPMAN (for writing dvbstream and contributions)
+.PP
+This manual page was written by Stephane Glondu <stephane.glondu@crans.org> and Brice DUBOST <@PACKAGE_BUGREPORT@>.

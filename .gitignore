@@ -8,6 +8,7 @@ config.*
 /missing
 /autom4te.cache
 /install-sh
+.deps/
 /src/.deps/
 /src/mumudvb
 /src/stamp-h1
@@ -17,3 +18,4 @@ config.*
 MuMuDVB.vcxproj.user
 Debug/
 Release/
+doc/mumudvb.8

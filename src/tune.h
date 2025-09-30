@@ -242,6 +242,9 @@ typedef struct tune_p_t{
 void init_tune_v(tune_p_t *);
 int tune_it(int, tune_p_t *);
 int read_tuning_configuration(tune_p_t *, char *);
-void print_status(fe_status_t festatus);
+void auto_detect_delivery_system(tune_p_t *);
+void print_status(fe_status_t festatus, int card_id, uint32_t frequency);
+int convert_strength_to_dbm(int strength);
+int convert_snr_to_db(int snr);
 
 #endif
