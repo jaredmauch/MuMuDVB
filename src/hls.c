@@ -124,7 +124,7 @@ int hls_entry_find(int service_id, hls_open_fds_t *hls_fds)
 
 	entry_found:
         return entry;
-};
+}
 
 int hls_entry_initialize(mumudvb_channel_t *actual_channel, hls_open_fds_t *hls_entry, unicast_parameters_t *unicast_vars, unsigned int access_time)
 {
@@ -132,15 +132,18 @@ int hls_entry_initialize(mumudvb_channel_t *actual_channel, hls_open_fds_t *hls_
 	hls_entry->filenames_num = unicast_vars->hls_rotate_count + 2; // names count for all chunks plus stream and delete names
 	hls_entry->filenames = calloc(1, hls_entry->filenames_num * sizeof(hls_file_t)); // allocate and clear
 
-	strncpy(hls_entry->path, unicast_vars->hls_storage_dir, LEN_MAX);
+	strncpy(hls_entry->path, unicast_vars->hls_storage_dir, LEN_MAX-1);
+	hls_entry->path[LEN_MAX-1] = '\0';
 	sprintf(hls_entry->name_playlist, "%d.m3u8", actual_channel->service_id);
 
 	sprintf(hls_entry->filenames[0].name, "%d_%u.ts", actual_channel->service_id, access_time);	// construct uniq filename here
 
 	if (strlen(actual_channel->user_name)) {
-	    strncpy(hls_entry->name, actual_channel->user_name, LEN_MAX);
+	    strncpy(hls_entry->name, actual_channel->user_name, LEN_MAX-1);
+	    hls_entry->name[LEN_MAX-1] = '\0';
 	} else {
-	    strncpy(hls_entry->name, actual_channel->name, LEN_MAX);
+	    strncpy(hls_entry->name, actual_channel->name, LEN_MAX-1);
+	    hls_entry->name[LEN_MAX-1] = '\0';
 	}
 
 	char path_stream[PATH_MAX];
@@ -310,7 +313,7 @@ int hls_playlist_master(hls_open_fds_t *hls_fds, unicast_parameters_t *unicast_v
 	}
 
         return 0;
-};
+}
 
 void hls_cleanup_files(hls_open_fds_t *hls_entry)
 {
@@ -370,8 +373,12 @@ int hls_write_metrics(strength_parameters_t *strengthparams, unicast_parameters_
 	    "bit_error_rate %d\n"
 	    "# TYPE signal_strength gauge\n"
 	    "signal_strength %d\n"
+	    "# TYPE signal_strength_dbm gauge\n"
+	    "signal_strength_dbm %d\n"
 	    "# TYPE signal_to_noise_ratio gauge\n"
 	    "signal_to_noise_ratio %d\n"
+	    "# TYPE signal_to_noise_ratio_db gauge\n"
+	    "signal_to_noise_ratio_db %d\n"
 	    "# TYPE blocks_uncorrected counter\n"
 	    "blocks_uncorrected %d\n"
 	    "# TYPE ts_discontinuities counter\n"
@@ -382,11 +389,17 @@ int hls_write_metrics(strength_parameters_t *strengthparams, unicast_parameters_
 	    "lock_active %u\n",
 	    strengthparams->ber,
 	    strengthparams->strength,
+	    strengthparams->dbm,
 	    strengthparams->snr,
+	    strengthparams->snr_db,
 	    strengthparams->ub,
 	    strengthparams->ts_discontinuities,
 	    strengthparams->lock_loss_events,
+#ifndef DISABLE_DVB_API
 	    (strengthparams->festatus & FE_HAS_LOCK) ? 1 : 0
+#else
+	    0
+#endif
 	);
 	fclose(file);
 	return 0;
@@ -402,7 +415,7 @@ void *hls_periodic_task(void* arg)
 	unicast_parameters_t *unicast_vars = (unicast_parameters_t *) params->unicast_vars;
 	strength_parameters_t *strengthparams = (strength_parameters_t *) params->strengthparams;
 
-	while(!params->threadshutdown) {
+	while(!params->threadshutdown && !get_interrupted()) {
 	    log_message( log_module, MSG_FLOOD,"Run periodic task...\n");
 
 	    cur_time = (unsigned int)(get_time() / 1000000ULL);

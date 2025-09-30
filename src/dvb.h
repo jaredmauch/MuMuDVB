@@ -76,6 +76,8 @@ typedef struct strength_parameters_t{
 	fds_t *fds;
 	fe_status_t festatus;
 	int strength, ber, snr, ub;
+	int dbm;  /* Signal strength in dBm */
+	int snr_db;  /* SNR in dB */
 	unsigned int ts_discontinuities, lock_loss_events;
 } strength_parameters_t;
 
@@ -109,6 +111,11 @@ int create_card_fd(char *base_path, int tuner, uint8_t *asked_pid, fds_t *fds);
 void set_filters(uint8_t *asked_pid, fds_t *fds);
 void close_card_fd(fds_t *fds);
 void *show_power_func(void* arg);
+int detect_available_cards(int *cards, int max_cards);
+int get_card_frontend_type(int card, int tuner);
+int reconnect_dvb_device(fds_t *fds, tune_p_t *tune_p, uint8_t *asked_pid);
+int convert_strength_to_dbm(int strength);
+int convert_snr_to_db(int snr);
 #ifndef _WIN32
 int card_read(int fd_dvr, unsigned char *dest_buffer, card_buffer_t *card_buffer);
 #else

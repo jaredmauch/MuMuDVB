@@ -130,6 +130,11 @@
 
 #include "mumudvb.h"
 #include "mumudvb_mon.h"
+#include "http_thread.h"
+
+// External variables for signal handler (avoid mutex in signal handler)
+extern volatile int interrupted;
+extern volatile int received_signal;
 #include "tune.h"
 #include "network.h"
 #include "dvb.h"
@@ -151,6 +156,8 @@
 #include "rtp.h"
 #include "log.h"
 #include "hls.h"
+#include "thread_manager.h"
+#include "event_timing.h"
 
 #if defined __UCLIBC__ || defined ANDROID
 #define program_invocation_short_name "mumudvb"
@@ -164,10 +171,7 @@ static char *log_module="Main: ";
    - see http://www.cadsoft.de/people/kls/vdr/index.htm */
 
 // global variables used by SignalHandler
-long now;
-long real_start_time;
 int *card_tuned;  	  			//Pointer to the card_tuned information
-int received_signal = 0;
 
 int timeout_no_diff = ALARM_TIME_TIMEOUT_NO_DIFF;
 int tuning_no_diff = 0;
@@ -196,11 +200,31 @@ void chan_new_pmt(unsigned char *ts_packet, mumu_chan_p_t *chan_p, int pid);
 
 int processt2(unsigned char* input_buf, unsigned int input_buf_offset, unsigned char* output_buf, unsigned int output_buf_offset, unsigned int output_buf_size, uint8_t plpId);
 
+// Function declarations for parallel card manager
+void set_client_processor_thread(pthread_t thread);
+
+// Global unified channel system instance
+unified_channel_system_t unified_system;
+
+// Global pointer to unified system for access from other modules
+unified_channel_system_t *global_unified_system = &unified_system;
+
 int main (int argc, char **argv)
 {
+	// Initialize thread manager for proper shutdown handling (unlimited by default)
+	if (init_thread_manager(-1) != 0) {
+		fprintf(stderr, "Failed to initialize thread manager\n");
+		return -1;
+	}
+	
 	// file descriptors
 	static fds_t fds; /** File descriptors associated with the card */
 	memset(&fds,0,sizeof(fds_t));
+	
+	// Global references for main thread polling (used by other modules)
+	extern fds_t *global_main_fds;
+	extern unicast_parameters_t *global_unicast_params;
+	global_main_fds = &fds;
 
 #ifdef _WIN32
 	WSADATA wsaData;
@@ -237,6 +261,18 @@ int main (int argc, char **argv)
 	//Parameters for HTTP unicast
 	unicast_parameters_t unic_p;
 	init_unicast_v(&unic_p);
+	global_unicast_params = &unic_p;
+	
+	// Initialize HTTP thread
+	if (init_http_thread(&unic_p) != 0) {
+		log_message(log_module, MSG_ERROR, "Failed to initialize HTTP thread");
+		return 1;
+	}
+	
+	// Initialize bitrate monitor for client synchronization
+	if (init_global_bitrate_monitor() != 0) {
+		log_message(log_module, MSG_WARN, "Failed to initialize bitrate monitor - client synchronization disabled");
+	}
 
 	//multicast
 	//multicast parameters
@@ -247,6 +283,9 @@ int main (int argc, char **argv)
 	tune_p_t tune_p;
 	init_tune_v(&tune_p);
 	card_tuned=&tune_p.card_tuned;
+
+	//unified channel system
+	memset(&unified_system, 0, sizeof(unified_channel_system_t));
 
 #ifdef ENABLE_CAM_SUPPORT
 	//CAM (Conditionnal Access Modules : for scrambled channels)
@@ -509,6 +548,11 @@ int main (int argc, char **argv)
 			if(iRet==-1)
 				exit(ERROR_CONF);
 		}
+		else if((iRet=read_unified_channel_configuration(&unified_system, substring))) //Read the line concerning the unified channel parameters
+		{
+			if(iRet==-1)
+				exit(ERROR_CONF);
+		}
 		else if (!strcmp (substring, "new_channel"))
 		{
 			ichan++;
@@ -579,7 +623,7 @@ int main (int argc, char **argv)
 		else if ((!strcmp (substring, "service_id")) || (!strcmp (substring, "ts_id")))
 		{
 			if(!strcmp (substring, "ts_id"))
-				log_message( log_module,  MSG_WARN, "The option ts_id is depreciated, use service_id instead.\n");
+				log_message( log_module,  MSG_WARN, "DEPRECATED: The option 'ts_id' is deprecated and will be removed in a future version. Please use 'service_id' instead.\n");
 			if ( c_chan == NULL)
 			{
 				log_message( log_module,  MSG_ERROR,
@@ -702,8 +746,21 @@ int main (int argc, char **argv)
 		else
 		{
 			if(strlen (current_line) > 1)
-				log_message( log_module,  MSG_WARN,
-						"Config issue : unknow symbol : %s\n\n", substring);
+			{
+				// Check for common typos and suggest corrections
+				if (!strcmp (substring, "autoconf"))
+					log_message( log_module,  MSG_WARN,
+							"Config issue : unknown symbol '%s'. Did you mean 'autoconfiguration'? Use 'autoconfiguration=full' instead.\n", substring);
+				else if (!strcmp (substring, "unified_tuners"))
+					log_message( log_module,  MSG_WARN,
+							"Config issue : unknown symbol '%s'. Did you mean 'unified_cards'? Use 'unified_cards' instead.\n", substring);
+				else if (!strcmp (substring, "ts_id"))
+					log_message( log_module,  MSG_WARN,
+							"Config issue : unknown symbol '%s'. Did you mean 'service_id'? Use 'service_id' instead.\n", substring);
+				else
+					log_message( log_module,  MSG_WARN,
+							"Config issue : unknown symbol '%s'. Check spelling and ensure parameter is supported in your MuMuDVB version. See documentation for valid parameters.\n", substring);
+			}
 			continue;
 		}
 
@@ -723,10 +780,124 @@ int main (int argc, char **argv)
 	fclose (conf_file);
 	free(conf_filename);
 
+	// Process port string before starting HTTP server
+	//If we specified a string for the unicast port out, we parse it
+	if(unic_p.portOut_str!=NULL)
+	{
+		log_message( "Unicast: ", MSG_INFO, "Processing port_http string: %s\n",unic_p.portOut_str);
+		int len;
+		char number[10];
+		len=strlen(unic_p.portOut_str)+1;
+		
+		// For unified system, use the first card's ID, otherwise use the configured card
+		int card_id = (unified_system.num_cards > 0) ? unified_system.cards[0].card_id : tune_p.card;
+		sprintf(number,"%d",card_id);
+		unic_p.portOut_str=mumu_string_replace(unic_p.portOut_str,&len,1,"%card",number);
+		
+		// For unified system, use tuner 0, otherwise use the configured tuner
+		int tuner_id = (unified_system.num_cards > 0) ? 0 : tune_p.tuner;
+		sprintf(number,"%d",tuner_id);
+		unic_p.portOut_str=mumu_string_replace(unic_p.portOut_str,&len,1,"%tuner",number);
+		
+		sprintf(number,"%d",server_id);
+		unic_p.portOut_str=mumu_string_replace(unic_p.portOut_str,&len,1,"%server",number);
+		unic_p.portOut=string_comput(unic_p.portOut_str);
+		log_message( "Unicast: ", MSG_INFO, "computed unicast master port : %d\n",unic_p.portOut);
+	}
+	else
+	{
+		log_message( "Unicast: ", MSG_INFO, "No port_http string specified, using default port: %d\n",unic_p.portOut);
+	}
+
+	/*****************************************************/
+	// Start HTTP server if unicast is enabled
+	/*****************************************************/
+	if(unic_p.unicast)
+	{
+		log_message("Unicast: ", MSG_INFO,"Starting HTTP server for address %s:%d\n",unic_p.ipOut, unic_p.portOut);
+		if (unicast_create_listening_socket(UNICAST_MASTER, -1, unic_p.ipOut, unic_p.portOut, &unic_p.socketIn, &unic_p) != 0) {
+			log_message(log_module, MSG_ERROR, "FATAL: Failed to create HTTP listening socket on %s:%d - HTTP server is required but cannot start", unic_p.ipOut, unic_p.portOut);
+			exit(ERROR_GENERIC);
+		}
+		
+		// Start HTTP thread only after socket is successfully created
+		if (start_http_thread() != 0) {
+			log_message(log_module, MSG_ERROR, "FATAL: Failed to start HTTP thread - HTTP server is required but cannot start");
+			exit(ERROR_GENERIC);
+		}
+		log_message(log_module, MSG_INFO, "HTTP thread started successfully");
+	}
+
+	//Initialize unified channel system if configured
+        if (unified_system.num_cards > 0 && unified_system.num_frequencies > 0) {
+		log_message(log_module, MSG_INFO, "Initializing unified channel system with %d cards and %d frequencies", 
+					unified_system.num_cards, unified_system.num_frequencies);
+		
+		if (init_unified_channel_system(&unified_system) != 0) {
+			log_message(log_module, MSG_ERROR, "Failed to initialize unified channel system");
+			exit(ERROR_CONF);
+		}
+		
+		// Set scan limit to number of cards for parallel scanning
+		unified_system.scan_limit = unified_system.num_cards;
+		log_message(log_module, MSG_INFO, "Set scan_limit to %d for parallel scanning", unified_system.scan_limit);
+		
+		// Initialize parallel card manager for simultaneous testing
+		if (init_parallel_card_manager(&unified_system) != 0) {
+			log_message(log_module, MSG_ERROR, "Failed to initialize parallel card manager");
+			exit(ERROR_CONF);
+		}
+		
+		// Set up signal handlers early so parallel threads can respond to Ctrl-C
+#ifndef DISABLE_DVB_API
+		if (signal (SIGHUP, SignalHandler) == SIG_IGN)
+			signal (SIGHUP, SIG_IGN);
+		if (signal (SIGINT, SignalHandler) == SIG_IGN)
+			signal (SIGINT, SIG_IGN);
+		if (signal (SIGTERM, SignalHandler) == SIG_IGN)
+			signal (SIGTERM, SIG_IGN);
+		struct sigaction act;
+		act.sa_handler = SIG_IGN;
+		sigemptyset (&act.sa_mask);
+		act.sa_flags = 0;
+		if(sigaction (SIGPIPE, &act, NULL)<0)
+			log_message( log_module,  MSG_ERROR,"ErrorSigaction\n");
+#endif
+		
+		// Unified system ready - will tune like single card method
+		log_message(log_module, MSG_INFO, "Unified system ready - will tune to first frequency like single card method");
+		
+		// Port processing already done before HTTP server startup
+		
+		// Set common parameters for all cards
+		unified_system.unicast_vars = &unic_p;
+		unified_system.multi_p = &multi_p;
+		unified_system.auto_p = &auto_p;
+		unified_system.scam_vars = scam_vars_ptr;
+		unified_system.server_id = server_id;
+		
+		// Update monitor parameters for all cards with common parameters
+		for (int i = 0; i < unified_system.num_cards; i++) {
+			if (unified_system.cards[i].monitor_params) {
+				unified_system.cards[i].monitor_params->auto_p = &auto_p;
+				unified_system.cards[i].monitor_params->multi_p = &multi_p;
+				unified_system.cards[i].monitor_params->unicast_vars = &unic_p;
+				unified_system.cards[i].monitor_params->scam_vars_v = scam_vars_ptr;
+				unified_system.cards[i].monitor_params->server_id = server_id;
+			}
+		}
+	}
 
 	//Set default card if not specified
 	if(tune_p.card==-1)
 		tune_p.card=0;
+	
+	// Auto-detect delivery system if not already set
+#if DVB_API_VERSION >= 5
+	if(tune_p.delivery_system == SYS_UNDEFINED) {
+		auto_detect_delivery_system(&tune_p);
+	}
+#endif
 
 
 	/*************************************/
@@ -780,21 +951,6 @@ int main (int argc, char **argv)
 	sprintf(number,"%d",tune_p.card);
 	int l=sizeof(tune_p.card_dev_path);
 	mumu_string_replace(tune_p.card_dev_path,&l,0,"%card",number);
-
-	//If we specified a string for the unicast port out, we parse it
-	if(unic_p.portOut_str!=NULL)
-	{
-		int len;
-		len=strlen(unic_p.portOut_str)+1;
-		sprintf(number,"%d",tune_p.card);
-		unic_p.portOut_str=mumu_string_replace(unic_p.portOut_str,&len,1,"%card",number);
-		sprintf(number,"%d",tune_p.tuner);
-		unic_p.portOut_str=mumu_string_replace(unic_p.portOut_str,&len,1,"%tuner",number);
-		sprintf(number,"%d",server_id);
-		unic_p.portOut_str=mumu_string_replace(unic_p.portOut_str,&len,1,"%server",number);
-		unic_p.portOut=string_comput(unic_p.portOut_str);
-		log_message( "Unicast: ", MSG_DEBUG, "computed unicast master port : %d\n",unic_p.portOut);
-	}
 
 	if(log_params.log_file_path!=NULL)
 	{
@@ -915,10 +1071,21 @@ int main (int argc, char **argv)
 		signal (SIGUSR2, SIG_IGN);
 	if (signal (SIGHUP, SignalHandler) == SIG_IGN)
 		signal (SIGHUP, SIG_IGN);
-	// alarm for tuning timeout
+	if (signal (SIGINT, SignalHandler) == SIG_IGN)
+		signal (SIGINT, SIG_IGN);
+	if (signal (SIGTERM, SignalHandler) == SIG_IGN)
+		signal (SIGTERM, SIG_IGN);
+	// Start tuning timeout using event timing system
 	if(tune_p.tuning_timeout)
 	{
-		alarm (tune_p.tuning_timeout);
+		// Use global unified timing tracker if available
+		extern event_timing_tracker_t *global_unified_timing_tracker;
+		if (global_unified_timing_tracker) {
+			start_tuning_timeout(global_unified_timing_tracker, tune_p.card, tune_p.tuning_timeout);
+		} else {
+			// Fallback to alarm if timing tracker not available
+			alarm(tune_p.tuning_timeout);
+		}
 	}
 #endif
 
@@ -946,7 +1113,47 @@ int main (int argc, char **argv)
 		}
 		/* "Tune" successful */
 		iRet = 1;
-	} else {
+	} else if (unified_system.num_cards > 0) {
+		// Unified system is active - skip main system tuning to keep all cards available
+		log_message(log_module, MSG_INFO, "Unified system active - skipping main system tuning to keep all cards available");
+		
+		// Set iRet to success to continue with HTTP server
+		iRet = 1;
+		
+		// Start parallel scanning of all cards and frequencies
+		log_message(log_module, MSG_INFO, "Starting parallel scanning with one thread per card...");
+		// Start parallel card scanning (creates one thread per card)
+		if (start_parallel_card_scanning() != 0) {
+			log_message(log_module, MSG_ERROR, "Failed to start parallel card scanning");
+		} else {
+			log_message(log_module, MSG_INFO, "Parallel card scanning started successfully");
+			
+		// Wait for initial scan to complete (with 30 second timeout)
+		log_message(log_module, MSG_INFO, "Waiting for initial scan to complete...");
+		if (wait_for_initial_scan_complete(30000) == 0) {
+			log_message(log_module, MSG_INFO, "Initial scan completed successfully");
+			
+			// Start traditional background scanning as backup (with 1 hour delay)
+			log_message(log_module, MSG_INFO, "Starting traditional background scanning as backup (1 hour delay)...");
+			pthread_t scan_thread;
+			if (pthread_create(&scan_thread, NULL, background_frequency_scanner, &unified_system) != 0) {
+				log_message(log_module, MSG_ERROR, "Failed to create background scanning thread");
+			} else {
+				register_thread(scan_thread, "Background-Scanner", NULL, NULL);
+			}
+		} else {
+			log_message(log_module, MSG_WARN, "Initial scan timed out or failed, starting background scanning anyway (1 hour delay)...");
+			// Start background scanning even if initial scan timed out
+			pthread_t scan_thread;
+			if (pthread_create(&scan_thread, NULL, background_frequency_scanner, &unified_system) != 0) {
+				log_message(log_module, MSG_ERROR, "Failed to create background scanning thread");
+			} else {
+				register_thread(scan_thread, "Background-Scanner", NULL, NULL);
+			}
+		}
+	}
+	}
+	else {
 		/* normal DVR input (or pipe on win32) */
 #ifndef _WIN32
 		iRet = open_fe(&fds.fd_frontend, tune_p.card_dev_path, tune_p.tuner, 1, 0);
@@ -988,8 +1195,12 @@ int main (int argc, char **argv)
 #ifndef _WIN32
 		if (strlen(tune_p.read_file_path))
 			iRet = 1; //no tuning if file input
-		else
+		else {
+			// Register card usage before tuning
+			register_card_usage(tune_p.card, tune_p.freq, "main_system_tuning");
+			
 			iRet = tune_it(fds.fd_frontend, &tune_p);
+		}
 #else
 		/* No tuning on windows at all */
 		iRet = 1;
@@ -1000,20 +1211,44 @@ int main (int argc, char **argv)
 
 	if (iRet < 0)
 	{
-		log_message( log_module,  MSG_INFO, "Tuning issue, card %d\n", tune_p.card);
-		// we close the file descriptors
-		close_card_fd(&fds);
-		set_interrupted(ERROR_TUNE<<8);
-		goto mumudvb_close_goto;
+		// For unified system, continue even if tuning fails
+		if (unified_system.num_cards > 0) {
+			log_message(log_module, MSG_INFO, "Unified system: First frequency tuning failed, but continuing with HTTP server");
+			iRet = 1; // Set to success to continue with HTTP server
+		} else {
+			log_message( log_module,  MSG_INFO, "Tuning issue, card %d\n", tune_p.card);
+			// we close the file descriptors
+			close_card_fd(&fds);
+			set_interrupted(ERROR_TUNE<<8);
+			goto mumudvb_close_goto;
+		}
 	}
-	log_message( log_module,  MSG_INFO, "Card %d, tuner %d tuned\n", tune_p.card, tune_p.tuner);
-	tune_p.card_tuned = 1;
+	if (unified_system.num_cards > 0) {
+		if (iRet == 0) {
+			log_message( log_module,  MSG_INFO, "Card %d, tuner %d tuned\n", tune_p.card, tune_p.tuner);
+		} else {
+			log_message( log_module,  MSG_INFO, "Unified system: Card %d, tuner %d not tuned, but HTTP server will start\n", tune_p.card, tune_p.tuner);
+		}
+		tune_p.card_tuned = 1; // Always set as tuned for unified system to start HTTP server
+	} else {
+		log_message( log_module,  MSG_INFO, "Card %d, tuner %d tuned\n", tune_p.card, tune_p.tuner);
+		tune_p.card_tuned = 1;
+		
+		// Cancel tuning timeout since card is now tuned
+		extern event_timing_tracker_t *global_unified_timing_tracker;
+		if (global_unified_timing_tracker) {
+			cancel_tuning_timeout(global_unified_timing_tracker, tune_p.card);
+		}
+		// Also cancel alarm if using fallback approach
+		alarm(0);
+	}
 
 	//Thread for showing the strength
 	strength_parameters_t strengthparams;
 	strengthparams.fds = &fds;
 	strengthparams.tune_p = &tune_p;
 	pthread_create(&(signalpowerthread), NULL, show_power_func, &strengthparams);
+	register_thread(signalpowerthread, "Signal/Power", NULL, NULL);
 	//Thread for reading from the DVB card initialization
 	if(card_buffer.threaded_read)
 	{
@@ -1032,26 +1267,11 @@ int main (int argc, char **argv)
 	/******************************************************/
 	//card tuned
 	/******************************************************/
-#ifndef DISABLE_DVB_API
-	// the card is tuned, we catch signals to close cleanly
-	if (signal (SIGHUP, SignalHandler) == SIG_IGN)
-		signal (SIGHUP, SIG_IGN);
-	if (signal (SIGINT, SignalHandler) == SIG_IGN)
-		signal (SIGINT, SIG_IGN);
-	if (signal (SIGTERM, SignalHandler) == SIG_IGN)
-		signal (SIGTERM, SIG_IGN);
-	struct sigaction act;
-	act.sa_handler = SIG_IGN;
-	sigemptyset (&act.sa_mask);
-	act.sa_flags = 0;
-	if(sigaction (SIGPIPE, &act, NULL)<0)
-		log_message( log_module,  MSG_ERROR,"ErrorSigaction\n");
-#endif
 
 	//We record the starting time
 	gettimeofday (&tv, (struct timezone *) NULL);
-	real_start_time = tv.tv_sec;
-	now = 0;
+	set_real_start_time(tv.tv_sec);
+	set_now(0);
 
 
 	if(stats_infos.show_traffic)
@@ -1083,6 +1303,7 @@ int main (int argc, char **argv)
 	};
 
 	pthread_create(&monitorthread, NULL, monitor_func, &monitor_thread_params);
+	register_thread(monitorthread, "Monitor", NULL, NULL);
 
 
 	// HLS support
@@ -1099,6 +1320,7 @@ int main (int argc, char **argv)
 			goto mumudvb_close_goto;
 		}
     		pthread_create(&hlsthread, NULL, hls_periodic_task, &hls_thread_params);
+    		register_thread(hlsthread, "HLS", NULL, NULL);
 	}
 
 	/*****************************************************/
@@ -1225,7 +1447,7 @@ int main (int argc, char **argv)
 	/*****************************************************/
 	//Set the filters
 	/*****************************************************/
-	update_chan_filters(&chan_p, tune_p.card_dev_path, tune_p.tuner, &fds);
+	update_chan_filters(&chan_p, tune_p.card_dev_path, tune_p.tuner, &fds, tune_p.card);
 
 	//We take care of the poll descriptors
 	fds.pfds=NULL;
@@ -1239,15 +1461,7 @@ int main (int argc, char **argv)
 		goto mumudvb_close_goto;
 	}
 
-	//We fill the file descriptor information structure. the first one is irrelevant
-	unic_p.fd_info=NULL;
-	unic_p.fd_info=realloc(unic_p.fd_info,(fds.pfdsnum)*sizeof(unicast_fd_info_t));
-	if (unic_p.fd_info==NULL)
-	{
-		log_message( log_module, MSG_ERROR,"Problem with realloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
-		set_interrupted(ERROR_MEMORY<<8);
-		goto mumudvb_close_goto;
-	}
+	// File descriptor information is now determined dynamically - no need for fd_info array
 
 #ifndef _WIN32
 	//File descriptor for polling the DVB card
@@ -1263,12 +1477,7 @@ int main (int argc, char **argv)
 	/*****************************************************/
 	// Init network, we open the sockets
 	/*****************************************************/
-	//We open the socket for the http unicast if needed and we update the poll structure
-	if(unic_p.unicast)
-	{
-		log_message("Unicast: ", MSG_INFO,"We open the Master http socket for address %s:%d\n",unic_p.ipOut, unic_p.portOut);
-		unicast_create_listening_socket(UNICAST_MASTER, -1, unic_p.ipOut, unic_p.portOut, &unic_p.socketIn, &unic_p);
-	}
+	// HTTP server is now started earlier after configuration processing
 	update_chan_net(&chan_p, &auto_p, &multi_p, &unic_p, server_id, tune_p.card, tune_p.tuner);
 
 
@@ -1298,7 +1507,8 @@ int main (int argc, char **argv)
 				multi_p.multicast_ipv6,
 				unic_p.unicast,
 				unic_p.portOut,
-				unic_p.ipOut);
+				unic_p.ipOut,
+				tune_p.card);
 
 	if(auto_p.autoconfiguration)
 		log_message("Autoconf: ",MSG_INFO,"Autoconfiguration is now ready to work for you !");
@@ -1308,6 +1518,7 @@ int main (int argc, char **argv)
 	if(card_buffer.threaded_read)
 	{
 		pthread_create(&(cardthread), NULL, read_card_thread_func, &cardthreadparams);
+		register_thread(cardthread, "Card-Reader", NULL, NULL);
 		//We alloc the buffers
 		card_buffer.write_buffer_size=card_buffer.max_thread_buffer_size*TS_PACKET_SIZE;
 		card_buffer.buffer1=malloc(sizeof(unsigned char)*card_buffer.write_buffer_size);
@@ -1367,8 +1578,51 @@ int main (int argc, char **argv)
 	unsigned char pmt_ts_packet[TS_PACKET_SIZE];
 	while (!get_interrupted())
 	{
-		if(card_buffer.threaded_read)
+		// Check for interrupt first - exit immediately if interrupted
+		if (get_interrupted()) {
+			log_message(log_module, MSG_INFO, "Main loop interrupted - initiating shutdown");
+			break;
+		}
+		
+		// Check if we need to handle device reconnection (for threaded mode)
+		// Skip reconnection if using unified system to avoid conflicts
+		if (get_interrupted() == ERROR_GENERIC && unified_system.num_cards == 0) {
+			log_message(log_module, MSG_ERROR, "DVB device error detected, attempting reconnection...\n");
+			if (reconnect_dvb_device(&fds, &tune_p, chan_p.asked_pid) < 0) {
+				log_message(log_module, MSG_ERROR, "Failed to reconnect to DVB device, exiting...\n");
+				break;
+			}
+			// Reset card_tuned flag and continue
+			tune_p.card_tuned = 1;
+			// Restart the read thread if using threaded mode
+			if (card_buffer.threaded_read) {
+				cardthreadparams.thread_running = 0;
+				pthread_join(cardthread, NULL);
+				cardthreadparams.thread_running = 1;
+				pthread_create(&(cardthread), NULL, read_card_thread_func, &cardthreadparams);
+				register_thread(cardthread, "Card-Reader", NULL, NULL);
+			}
+			continue;
+		} else if (get_interrupted() == ERROR_GENERIC && unified_system.num_cards > 0) {
+			log_message(log_module, MSG_WARN, "DVB device error detected in unified system - letting unified system handle reconnection\n");
+			// Don't reset interrupt flag - let it continue to shutdown
+			continue;
+		}
+		
+		// Cancel alarm if we're interrupted to prevent SIGALRM
+		if (get_interrupted()) {
+			alarm(0); // Cancel any pending alarm
+			// Also cancel timer-based tuning timeout
+			extern event_timing_tracker_t *global_unified_timing_tracker;
+			if (global_unified_timing_tracker) {
+				cancel_tuning_timeout(global_unified_timing_tracker, tune_p.card);
+			}
+		}
+		
+		// Skip threaded DVR reading when using unified system - unified system handles all DVB access
+		if(card_buffer.threaded_read && unified_system.num_cards == 0)
 		{
+			
 			if(!card_buffer.bytes_in_write_buffer)
 			{
 				pthread_mutex_lock(&cardthreadparams.carddatamutex);
@@ -1398,25 +1652,20 @@ int main (int argc, char **argv)
 			}
 			pthread_mutex_unlock(&cardthreadparams.carddatamutex);
 			/**************************************************************/
-			/* UNICAST HTTP                                               */
+			/* UPDATE HTTP THREAD DATA                                    */
 			/**************************************************************/
-			if(unic_p.pfdsnum)
-			{
-				if(mumudvb_poll(unic_p.pfds,unic_p.pfdsnum,0)>0)
-				{
-					iRet=unicast_handle_fd_event(&unic_p, chan_p.channels, chan_p.number_of_channels, &strengthparams, &auto_p, cam_p_ptr, scam_vars_ptr, rewrite_vars.eit_packets);
-					if(iRet)
-					{
-						log_message( log_module,  MSG_ERROR, "unicast fd error %d", iRet);
-						set_interrupted(iRet);
-					}
-				}
-			}
+			// Update HTTP thread with current data
+			http_thread_update_channels(chan_p.channels, chan_p.number_of_channels);
+			http_thread_update_strength_params(&strengthparams);
+			http_thread_update_auto_params(&auto_p);
+			http_thread_update_cam_params(cam_p_ptr);
+			http_thread_update_scam_vars(scam_vars_ptr);
+			http_thread_update_eit_packets(rewrite_vars.eit_packets);
 			/**************************************************************/
-			/* END OF UNICAST HTTP                                        */
+			/* END OF HTTP THREAD DATA UPDATE                             */
 			/**************************************************************/
 		}
-		else
+		else if (unified_system.num_cards == 0)
 		{
 			/* Poll the open file descriptors : we wait for data*/
 			if (fds.fd_source == 0) {
@@ -1437,33 +1686,71 @@ int main (int argc, char **argv)
 			}
 
 			/**************************************************************/
-			/* UNICAST HTTP                                               */
+			/* UPDATE HTTP THREAD DATA                                    */
 			/**************************************************************/
-			if(unic_p.pfdsnum)
-			{
-				poll_ret=mumudvb_poll(unic_p.pfds,unic_p.pfdsnum,0);
-				if(poll_ret>0)
-				{
-					iRet=unicast_handle_fd_event(&unic_p, chan_p.channels, chan_p.number_of_channels, &strengthparams, &auto_p, cam_p_ptr, scam_vars_ptr,rewrite_vars.eit_packets);
-					if(iRet)
-					{
-						log_message( log_module,  MSG_ERROR, "unicast fd error %d", iRet);
-						set_interrupted(iRet);
-					}
-				}
+			// Update HTTP thread with current data
+			http_thread_update_channels(chan_p.channels, chan_p.number_of_channels);
+			http_thread_update_strength_params(&strengthparams);
+			http_thread_update_auto_params(&auto_p);
+			http_thread_update_cam_params(cam_p_ptr);
+			http_thread_update_scam_vars(scam_vars_ptr);
+			http_thread_update_eit_packets(rewrite_vars.eit_packets);
+			
+			if (unified_system.num_cards > 0) {
+				// When using unified system, simulate successful read to keep main loop running
+				card_buffer.bytes_read = 0;
 			}
 			/**************************************************************/
-			/* END OF UNICAST HTTP                                        */
+			/* END OF HTTP THREAD DATA UPDATE                             */
 			/**************************************************************/
+			// Skip DVR reading when using unified system - unified system handles all DVB access
 			if (fds.fd_source > 0) {
 				/* UDP receive */
 				int len = TS_PACKET_SIZE * card_buffer.dvr_buffer_size;
 
 				card_buffer.bytes_read = recvfrom(fds.fd_source, card_buffer.reading_buffer, len, 0, NULL, NULL);
 			} else {
-				if ((card_buffer.bytes_read = card_read(fds.fd_dvr, card_buffer.reading_buffer, &card_buffer)) == 0)
+				card_buffer.bytes_read = card_read(fds.fd_dvr, card_buffer.reading_buffer, &card_buffer);
+				if (card_buffer.bytes_read == 0)
 					continue;
+				else if (card_buffer.bytes_read == -1) {
+					// Device error - attempt reconnection only if not using unified system
+					if (unified_system.num_cards == 0) {
+						log_message(log_module, MSG_ERROR, "DVB device error detected, attempting reconnection...\n");
+						if (reconnect_dvb_device(&fds, &tune_p, chan_p.asked_pid) < 0) {
+							log_message(log_module, MSG_ERROR, "Failed to reconnect to DVB device, exiting...\n");
+							set_interrupted(ERROR_GENERIC);
+							break;
+						}
+						// Reset card_tuned flag and continue
+						tune_p.card_tuned = 1;
+						continue;
+					} else {
+						log_message(log_module, MSG_WARN, "DVB device error detected in unified system - letting unified system handle it\n");
+						// Let unified system handle the error
+						continue;
+					}
+				}
 			}
+		}
+		else
+		{
+			// Unified system is active - skip DVR reading and just handle HTTP requests
+			card_buffer.bytes_read = 0;
+			
+			/**************************************************************/
+			/* UPDATE HTTP THREAD DATA                                    */
+			/**************************************************************/
+			// Update HTTP thread with current data
+			http_thread_update_channels(chan_p.channels, chan_p.number_of_channels);
+			http_thread_update_strength_params(&strengthparams);
+			http_thread_update_auto_params(&auto_p);
+			http_thread_update_cam_params(cam_p_ptr);
+			http_thread_update_scam_vars(scam_vars_ptr);
+			http_thread_update_eit_packets(rewrite_vars.eit_packets);
+			/**************************************************************/
+			/* END OF HTTP THREAD DATA UPDATE                             */
+			/**************************************************************/
 		}
 
 		if(card_buffer.dvr_buffer_size!=1 && stats_infos.show_buffer_stats)
@@ -1536,6 +1823,12 @@ int main (int argc, char **argv)
 			}
 		}
 
+		// Check for interrupt before processing packets
+		if (get_interrupted()) {
+			log_message(log_module, MSG_INFO, "Interrupted during packet processing - exiting");
+			break;
+		}
+		
 		for(card_buffer.read_buff_pos=0;
 				(card_buffer.read_buff_pos+TS_PACKET_SIZE)<=card_buffer.bytes_read;
 				card_buffer.read_buff_pos+=TS_PACKET_SIZE)//we loop on the subpackets
@@ -1593,17 +1886,24 @@ int main (int argc, char **argv)
 			/******************************************************/
 			if(!ScramblingControl &&  auto_p.autoconfiguration)
 			{
-				iRet = autoconf_new_packet(pid, actual_ts_packet, &auto_p,  &fds, &chan_p, &tune_p, &multi_p, &unic_p, server_id, scam_vars_ptr);
+				iRet = autoconf_new_packet(pid, actual_ts_packet, &auto_p,  &fds, &chan_p, &tune_p, &multi_p, &unic_p, server_id, scam_vars_ptr, tune_p.card);
 				if(iRet)
 				{
 					log_message( log_module,  MSG_ERROR, "Autoconf error %d", iRet);
 					set_interrupted(iRet);
+					break; // Exit the main loop immediately on autoconf error
 				}
 			}
 
 			/******************************************************/
 			//   AUTOCONFIGURATION PART FINISHED
 			/******************************************************/
+			
+			// Check for interrupt after autoconf processing
+			if (get_interrupted()) {
+				log_message(log_module, MSG_INFO, "Interrupted during packet processing loop - exiting");
+				break;
+			}
 
 			/******************************************************/
 			//Pat rewrite
@@ -1679,10 +1979,10 @@ int main (int argc, char **argv)
 #ifdef ENABLE_CAM_SUPPORT
 				if((cam_p.cam_support && send_packet==1) &&  //no need to check packets we don't send
 						cam_p.ca_resource_connected &&
-						((now-cam_p.cam_pmt_send_time)>=cam_p.cam_interval_pmt_send ))
+						((get_now()-cam_p.cam_pmt_send_time)>=cam_p.cam_interval_pmt_send ))
 				{
 					if(cam_new_packet(pid, ichan, &cam_p, &chan_p.channels[ichan]))
-						cam_p.cam_pmt_send_time=now; //A packet was sent to the CAM
+						cam_p.cam_pmt_send_time=get_now(); //A packet was sent to the CAM
 				}
 #endif
 
@@ -1777,6 +2077,14 @@ int main (int argc, char **argv)
 		    t2_partial_size = 0;
 		}
 
+		// Small sleep to prevent 100% CPU usage and allow other threads to run
+		EVENT_MSLEEP(TIMING_MAIN_LOOP_SLEEP_MS);
+		
+		// Check for interrupt after sleep to ensure responsive shutdown
+		if (get_interrupted()) {
+			log_message(log_module, MSG_INFO, "Main loop interrupted after sleep - exiting");
+			break;
+		}
 	}
 	/******************************************************/
 	//End of main loop
@@ -1784,8 +2092,9 @@ int main (int argc, char **argv)
 	if(dump_file)
 		fclose(dump_file);
 	gettimeofday (&tv, (struct timezone *) NULL);
+	long start_time = get_real_start_time();
 	log_message( log_module,  MSG_INFO,
-			"End of streaming. We streamed during %ldd %ld:%02ld:%02ld\n",(tv.tv_sec - real_start_time )/86400,((tv.tv_sec - real_start_time) % 86400 )/3600,((tv.tv_sec - real_start_time) % 3600)/60,(tv.tv_sec - real_start_time) %60 );
+			"End of streaming. We streamed during %ldd %ld:%02ld:%02ld\n",(tv.tv_sec - start_time )/86400,((tv.tv_sec - start_time) % 86400 )/3600,((tv.tv_sec - start_time) % 3600)/60,(tv.tv_sec - start_time) %60 );
 
 	if(card_buffer.partial_packet_number)
 		log_message( log_module,  MSG_INFO,
@@ -1794,6 +2103,18 @@ int main (int argc, char **argv)
 		log_message( log_module,  MSG_INFO,
 				"We have got %d overflow errors\n",card_buffer.overflow_number );
 	mumudvb_close_goto:
+	// Unregister main system card usage
+	if (tune_p.card >= 0) {
+		unregister_card_usage(tune_p.card, "main_system_tuning");
+	}
+	
+	//Cleanup unified channel system - always run cleanup regardless of card count
+	cleanup_unified_channel_system(&unified_system);
+	cleanup_parallel_card_manager();
+	
+	// Cleanup HTTP thread
+	cleanup_http_thread();
+	
 	//If the thread is not started, we don't send the nonexistent address of monitor_thread_params
 	return mumudvb_close(no_daemon,
 			pthread_equal(monitorthread, pthread_self()) ? NULL:&monitor_thread_params,
@@ -1833,24 +2154,58 @@ int main (int argc, char **argv)
  ******************************************************/
 static void SignalHandler (int signum)
 {
+	// Use atomic operations for reentrant safety
+	static volatile sig_atomic_t signal_handler_busy = 0;
+	
+	// Prevent signal handler re-entry using atomic compare-and-swap
+	if (__sync_lock_test_and_set(&signal_handler_busy, 1)) {
+		return; // Already processing a signal
+	}
+	
 	if (signum == SIGALRM && !get_interrupted())
 	{
-		if (card_tuned && !*card_tuned)
+		// Only handle SIGALRM if we're using the fallback alarm approach
+		// (timer-based approach handles this in event timing system)
+		extern event_timing_tracker_t *global_unified_timing_tracker;
+		if (!global_unified_timing_tracker && card_tuned && !*card_tuned)
 		{
-			log_message( log_module,  MSG_INFO,
-					"Card not tuned after timeout - exiting\n");
+			// Use signal-safe write() instead of log_message() to avoid segfaults
+			const char *msg = "Card not tuned after timeout - exiting\n";
+			write(STDERR_FILENO, msg, strlen(msg));
 			exit(ERROR_TUNE);
 		}
 	}
 	else if (signum == SIGUSR1 || signum == SIGUSR2 || signum == SIGHUP)
 	{
-		received_signal=signum;
+		// Use atomic operation instead of mutex to avoid blocking signal handler
+		received_signal = signum;
 	}
 	else if (signum != SIGPIPE)
 	{
-		log_message( log_module,  MSG_ERROR, "Caught signal %d", signum);
-		set_interrupted(signum);
+		// Only log and set interrupt if not already interrupted
+		if (!get_interrupted()) {
+			// Use signal-safe write() instead of log_message() to avoid segfaults
+			// log_message() is not signal-safe due to malloc/free/fprintf calls
+			const char *msg = "Caught signal 2\n"; // SIGINT is always 2
+			write(STDERR_FILENO, msg, strlen(msg));
+			
+			// Use atomic operation instead of mutex to avoid blocking signal handler
+			interrupted = signum;
+			// Cancel any pending alarm to prevent SIGALRM during shutdown
+			alarm(0);
+		} else {
+			// Already interrupted, just cancel alarm if it's SIGALRM
+			if (signum == SIGALRM) {
+				alarm(0);
+			}
+		}
 	}
+	
+	// Re-register signal handler to ensure Ctrl+C continues to work
+	// Do this AFTER processing to avoid re-entry issues
 	signal (signum, SignalHandler);
+	
+	// Release the lock atomically
+	__sync_lock_release(&signal_handler_busy);
 }
 #endif

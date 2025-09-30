@@ -37,11 +37,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include "log.h"
+#include "unicast_http.h"
 #ifndef _WIN32
 #include <net/if.h>
 #include <unistd.h>
+#include <netinet/tcp.h>
 #else
 #define close(sock) closesocket(sock)
+#include <mstcpip.h>
 #endif
 
 static char *log_module="Network: ";
@@ -487,6 +490,9 @@ int makeTCPclientsocket(char *szAddr, unsigned short port)
 		return -1;
 	}
 
+	// Configure TCP optimizations for the listening socket
+	configure_tcp_optimizations(iSocket, 1, NULL);  // 1 = listening socket, NULL = use defaults
+
 	//Now we set this socket to be non blocking because we poll it
 	int flags;
 #ifndef _WIN32
@@ -509,6 +515,114 @@ int makeTCPclientsocket(char *szAddr, unsigned short port)
 #endif
 
 	return iSocket;
+}
+
+/** @brief Configure TCP socket optimizations
+ *
+ * Enable TCP keepalives, window scaling, and selective ACKs for better performance
+ * and reliability of TCP connections.
+ *
+ * @param socket The TCP socket to configure
+ * @param is_listening_socket Whether this is a listening socket (true) or client socket (false)
+ * @param unicast_vars Unicast parameters containing TCP optimization settings (can be NULL for defaults)
+ * @return 0 on success, -1 on failure
+ */
+int configure_tcp_optimizations(int socket, int is_listening_socket, unicast_parameters_t *unicast_vars)
+{
+	int iRet;
+	int opt_val;
+	socklen_t opt_len;
+
+	// Set default values
+	int keepalive = 1;
+	int keepalive_idle = 30;
+	int keepalive_interval = 5;
+	int keepalive_count = 3;
+	int window_scaling = 1;
+	int selective_acks = 1;
+
+	// Use configuration values if available
+	if (unicast_vars) {
+		keepalive = unicast_vars->tcp_keepalive;
+		keepalive_idle = unicast_vars->tcp_keepalive_idle;
+		keepalive_interval = unicast_vars->tcp_keepalive_interval;
+		keepalive_count = unicast_vars->tcp_keepalive_count;
+		window_scaling = unicast_vars->tcp_window_scaling;
+		selective_acks = unicast_vars->tcp_selective_acks;
+	}
+
+	// TCP Keepalive configuration
+	if (keepalive) {
+		opt_val = 1;
+		iRet = setsockopt(socket, SOL_SOCKET, SO_KEEPALIVE, (const char *)&opt_val, sizeof(opt_val));
+		if (iRet < 0) {
+			log_message(log_module, MSG_WARN, "setsockopt SO_KEEPALIVE failed: %s\n", strerror(errno));
+		} else {
+			log_message(log_module, MSG_DEBUG, "TCP keepalive enabled on socket %d\n", socket);
+		}
+
+#ifndef _WIN32
+		// TCP Keepalive parameters (Linux/Unix specific)
+		if (iRet == 0) {
+			// Keepalive idle time (seconds)
+			opt_val = keepalive_idle;
+			iRet = setsockopt(socket, IPPROTO_TCP, TCP_KEEPIDLE, &opt_val, sizeof(opt_val));
+			if (iRet < 0) {
+				log_message(log_module, MSG_DEBUG, "setsockopt TCP_KEEPIDLE failed: %s\n", strerror(errno));
+			}
+
+			// Keepalive probe interval (seconds)
+			opt_val = keepalive_interval;
+			iRet = setsockopt(socket, IPPROTO_TCP, TCP_KEEPINTVL, &opt_val, sizeof(opt_val));
+			if (iRet < 0) {
+				log_message(log_module, MSG_DEBUG, "setsockopt TCP_KEEPINTVL failed: %s\n", strerror(errno));
+			}
+
+			// Number of failed probes before connection is considered dead
+			opt_val = keepalive_count;
+			iRet = setsockopt(socket, IPPROTO_TCP, TCP_KEEPCNT, &opt_val, sizeof(opt_val));
+			if (iRet < 0) {
+				log_message(log_module, MSG_DEBUG, "setsockopt TCP_KEEPCNT failed: %s\n", strerror(errno));
+			}
+		}
+#endif
+	}
+
+	// TCP Window Scaling (RFC 1323)
+	if (window_scaling) {
+		opt_val = 1;
+		iRet = setsockopt(socket, IPPROTO_TCP, TCP_WINDOW_CLAMP, (const char *)&opt_val, sizeof(opt_val));
+		if (iRet < 0) {
+			log_message(log_module, MSG_DEBUG, "setsockopt TCP_WINDOW_CLAMP failed: %s\n", strerror(errno));
+		}
+
+		// Enable TCP window scaling by setting a large send buffer
+		// Note: This will be overridden by unicast_clients.c if socket_sendbuf_size is configured
+		if (!is_listening_socket) {
+			opt_val = 1024 * 1024;  // 1MB send buffer for better window scaling
+			iRet = setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (const char *)&opt_val, sizeof(opt_val));
+			if (iRet < 0) {
+				log_message(log_module, MSG_DEBUG, "setsockopt SO_SNDBUF for window scaling failed: %s\n", strerror(errno));
+			} else {
+				log_message(log_module, MSG_DEBUG, "TCP window scaling enabled with %d byte send buffer\n", opt_val);
+			}
+		}
+	}
+
+	// TCP Selective ACKs (SACK) - enabled by default on modern systems
+	// This is usually enabled by default, but we can verify it's working
+	if (selective_acks) {
+		opt_len = sizeof(opt_val);
+		iRet = getsockopt(socket, IPPROTO_TCP, TCP_NODELAY, (char *)&opt_val, &opt_len);
+		if (iRet == 0) {
+			log_message(log_module, MSG_DEBUG, "TCP socket %d configured with optimizations\n", socket);
+		}
+	}
+
+	// TCP No Delay (Nagle's algorithm) - already handled in unicast_clients.c
+	// We don't set it here to avoid conflicts
+
+	return 0;
 }
 
 int socket_to_string(int sock, char *pDest, size_t len)

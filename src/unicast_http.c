@@ -67,6 +67,8 @@
 #include "tune.h"
 #include "autoconf.h"
 #include "rewrite.h"
+#include "network.h"
+#include "unified_storage_adapter.h"
 #ifdef ENABLE_CAM_SUPPORT
 #include "cam.h"
 #endif
@@ -83,8 +85,47 @@
 
 static char *log_module="Unicast : ";
 
+// Global unified system reference (will be set by main system)
+extern unified_channel_system_t *global_unified_system;
+
+// Unicast file descriptor types
+#define UNICAST_MASTER 1
+#define UNICAST_CLIENT 2
+#define UNICAST_LISTEN_CHANNEL 3
+
+// Helper function to determine file descriptor type
+static int get_fd_type(unicast_parameters_t *unicast_vars, int fd) {
+	// Check if it's the master socket
+	if (fd == unicast_vars->socketIn) {
+		return UNICAST_MASTER;
+	}
+	
+	// Check if it's a client socket by looking it up in the client list
+	unicast_client_t *client = unicast_vars->clients;
+	while (client != NULL) {
+		if (client->Socket == fd) {
+			return UNICAST_CLIENT;
+		}
+		client = client->next;
+	}
+	
+	// Check if it's a channel listening socket by looking it up in channels
+	// We need to pass channels array to this function, but for now assume it's a channel socket
+	return UNICAST_LISTEN_CHANNEL;
+}
+
+// Helper function to find channel number for a socket
+static int get_channel_for_socket(mumudvb_channel_t *channels, int number_of_channels, int fd) {
+	for (int i = 0; i < number_of_channels; i++) {
+		if (channels[i].socketIn == fd) {
+			return i;
+		}
+	}
+	return -1; // Not found
+}
+
 //from unicast_client.c
-unicast_client_t *unicast_add_client(unicast_parameters_t *unicast_vars, int Socket);
+unicast_client_t *unicast_add_client(unicast_parameters_t *unicast_vars, int Socket, const char *client_ip);
 int channel_add_unicast_client(unicast_client_t *client,mumudvb_channel_t *channel);
 
 unicast_client_t *unicast_accept_connection(unicast_parameters_t *unicast_vars, int socketIn);
@@ -130,7 +171,7 @@ int unicast_handle_message(unicast_parameters_t* unicast_vars,
 
 #define REPLY_HEADER 0
 #define REPLY_BODY 1
-#define REPLY_SIZE_STEP 256
+#define REPLY_SIZE_STEP 4096
 
 
 /** Initialize unicast variables*/
@@ -156,6 +197,13 @@ void init_unicast_v(unicast_parameters_t *unicast_vars)
 				.hls_rotate_iframe=0,
 				.hls_storage_dir=NULL,
 				.hls_playlist_name=NULL,
+				.tcp_keepalive=1,
+				.tcp_keepalive_idle=30,
+				.tcp_keepalive_interval=5,
+				.tcp_keepalive_count=3,
+				.tcp_window_scaling=1,
+				.tcp_selective_acks=1,
+				.scan_results_refresh_delay=300,
 	 };
 	 unicast_vars->pfds=NULL;
 	 //+1 for closing the pfd list, see man poll
@@ -169,6 +217,8 @@ void init_unicast_v(unicast_parameters_t *unicast_vars)
 	 unicast_vars->pfds[0].fd = 0;
 	 unicast_vars->pfds[0].events = POLLIN | POLLPRI;
 	 unicast_vars->pfds[0].revents = 0;
+
+	 // No need to initialize fd_info array - we determine types dynamically
 
 	 unicast_vars->hls_storage_dir = malloc(MAX_NAME_LEN);
 	 if (unicast_vars->hls_storage_dir==NULL)
@@ -205,7 +255,7 @@ int read_unicast_configuration(unicast_parameters_t *unicast_vars, mumudvb_chann
 	{
 		substring = strtok (NULL, delimiteurs);
 		if (strlen(substring) > INET6_ADDRSTRLEN) {
-			log_message( log_module,  MSG_ERROR, "The Ip address %s is too long.\n", substring);
+			log_message( log_module,  MSG_ERROR, "Configuration error: IP address '%s' is too long (max %d characters). Please use a valid IPv4 or IPv6 address.\n", substring, INET6_ADDRSTRLEN-1);
 			exit(ERROR_CONF);
 		}
 		sscanf (substring, "%s\n", unicast_vars->ipOut);
@@ -313,7 +363,7 @@ int read_unicast_configuration(unicast_parameters_t *unicast_vars, mumudvb_chann
 		substring = strtok (NULL, delimiteurs);
 		unicast_vars->hls_rotate_time = atoi (substring);
 		if (unicast_vars->hls_rotate_time < 1) {
-                        log_message( log_module,  MSG_WARN,"HLS rotate time \"%d\" is lower than 1, forcing to 1!\n", unicast_vars->hls_rotate_time);
+                        log_message( log_module,  MSG_WARN,"HLS configuration warning: hls_rotate_time=%d is less than 1 second, setting to 1 second minimum.\n", unicast_vars->hls_rotate_time);
                         unicast_vars->hls_rotate_time = 1;
                 }
 	}
@@ -323,7 +373,7 @@ int read_unicast_configuration(unicast_parameters_t *unicast_vars, mumudvb_chann
 		substring = strtok (NULL, delimiteurs);
 		unicast_vars->hls_rotate_count = atoi (substring);
 		if (unicast_vars->hls_rotate_count < 1) {
-                        log_message( log_module,  MSG_WARN,"HLS rotate count \"%d\" is lower than 1, forcing to 1!\n", unicast_vars->hls_rotate_count);
+                        log_message( log_module,  MSG_WARN,"HLS configuration warning: hls_rotate_count=%d is less than 1, setting to 1 segment minimum.\n", unicast_vars->hls_rotate_count);
                         unicast_vars->hls_rotate_count = 1;
                 }
 	}
@@ -333,7 +383,7 @@ int read_unicast_configuration(unicast_parameters_t *unicast_vars, mumudvb_chann
 		substring = strtok (NULL, delimiteurs);
 		unicast_vars->hls_rotate_iframe = atoi (substring);
 		if (unicast_vars->hls_rotate_iframe < 0) {
-                        log_message( log_module,  MSG_WARN,"HLS rotate iframe \"%d\" is lower than 0, forcing to 0!\n", unicast_vars->hls_rotate_count);
+                        log_message( log_module,  MSG_WARN,"HLS configuration warning: hls_rotate_iframe=%d is less than 0, setting to 0 (disabled).\n", unicast_vars->hls_rotate_iframe);
                         unicast_vars->hls_rotate_iframe = 0;
                 }
 	}
@@ -351,6 +401,61 @@ int read_unicast_configuration(unicast_parameters_t *unicast_vars, mumudvb_chann
                 strncpy(unicast_vars->hls_playlist_name,strtok(substring,"\n"),MAX_NAME_LEN-1);
                 unicast_vars->hls_playlist_name[MAX_NAME_LEN-1]='\0';
         }
+	else if (!strcmp (substring, "tcp_keepalive"))
+	{
+		substring = strtok (NULL, delimiteurs);
+		unicast_vars->tcp_keepalive = atoi (substring);
+	}
+	else if (!strcmp (substring, "tcp_keepalive_idle"))
+	{
+		substring = strtok (NULL, delimiteurs);
+		unicast_vars->tcp_keepalive_idle = atoi (substring);
+		if (unicast_vars->tcp_keepalive_idle < 1) {
+			log_message( log_module,  MSG_WARN,"TCP keepalive idle time %d is less than 1, setting to 1 second\n", unicast_vars->tcp_keepalive_idle);
+			unicast_vars->tcp_keepalive_idle = 1;
+		}
+	}
+	else if (!strcmp (substring, "tcp_keepalive_interval"))
+	{
+		substring = strtok (NULL, delimiteurs);
+		unicast_vars->tcp_keepalive_interval = atoi (substring);
+		if (unicast_vars->tcp_keepalive_interval < 1) {
+			log_message( log_module,  MSG_WARN,"TCP keepalive interval %d is less than 1, setting to 1 second\n", unicast_vars->tcp_keepalive_interval);
+			unicast_vars->tcp_keepalive_interval = 1;
+		}
+	}
+	else if (!strcmp (substring, "tcp_keepalive_count"))
+	{
+		substring = strtok (NULL, delimiteurs);
+		unicast_vars->tcp_keepalive_count = atoi (substring);
+		if (unicast_vars->tcp_keepalive_count < 1) {
+			log_message( log_module,  MSG_WARN,"TCP keepalive count %d is less than 1, setting to 1\n", unicast_vars->tcp_keepalive_count);
+			unicast_vars->tcp_keepalive_count = 1;
+		}
+	}
+	else if (!strcmp (substring, "tcp_window_scaling"))
+	{
+		substring = strtok (NULL, delimiteurs);
+		unicast_vars->tcp_window_scaling = atoi (substring);
+	}
+	else if (!strcmp (substring, "tcp_selective_acks"))
+	{
+		substring = strtok (NULL, delimiteurs);
+		unicast_vars->tcp_selective_acks = atoi (substring);
+	}
+	else if (!strcmp (substring, "scan_results_refresh_delay"))
+	{
+		substring = strtok (NULL, delimiteurs);
+		unicast_vars->scan_results_refresh_delay = atoi (substring);
+		if (unicast_vars->scan_results_refresh_delay < 1) {
+			log_message( log_module,  MSG_WARN,"Scan results refresh delay %d is less than 1, setting to 1 second\n", unicast_vars->scan_results_refresh_delay);
+			unicast_vars->scan_results_refresh_delay = 1;
+		}
+		if (unicast_vars->scan_results_refresh_delay > 3600) {
+			log_message( log_module,  MSG_WARN,"Scan results refresh delay %d is greater than 3600, setting to 3600 seconds (1 hour)\n", unicast_vars->scan_results_refresh_delay);
+			unicast_vars->scan_results_refresh_delay = 3600;
+		}
+	}
 
 	else
 		return 0; //Nothing concerning tuning, we return 0 to explore the other possibilities
@@ -374,7 +479,8 @@ int unicast_create_listening_socket(int socket_type, int socket_channel, char *i
 	if(*socketIn>0)
 	{
 		unicast_vars->pfdsnum++;
-		log_message( log_module, MSG_DEBUG, "unicast : unicast_vars->pfdsnum : %d\n", unicast_vars->pfdsnum);
+		log_message( log_module, MSG_DEBUG, "unicast : creating socket type=%d, channel=%d, socket=%d, pfdsnum=%d\n", 
+		           socket_type, socket_channel, *socketIn, unicast_vars->pfdsnum);
 		unicast_vars->pfds=realloc(unicast_vars->pfds,(unicast_vars->pfdsnum+1)*sizeof(struct pollfd));
 		if (unicast_vars->pfds==NULL)
 		{
@@ -387,17 +493,9 @@ int unicast_create_listening_socket(int socket_type, int socket_channel, char *i
 		unicast_vars->pfds[unicast_vars->pfdsnum].fd = 0;
 		unicast_vars->pfds[unicast_vars->pfdsnum].events = POLLIN | POLLPRI;
 		unicast_vars->pfds[unicast_vars->pfdsnum].revents = 0;
-		//Information about the descriptor
-		unicast_vars->fd_info=realloc(unicast_vars->fd_info,(unicast_vars->pfdsnum)*sizeof(unicast_fd_info_t));
-		if (unicast_vars->fd_info==NULL)
-		{
-			log_message( log_module, MSG_ERROR,"Problem with realloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
-			return -1;
-		}
-		//Master connection
-		unicast_vars->fd_info[unicast_vars->pfdsnum-1].type=socket_type;
-		unicast_vars->fd_info[unicast_vars->pfdsnum-1].channel=socket_channel;
-		unicast_vars->fd_info[unicast_vars->pfdsnum-1].client=NULL;
+		// No need to allocate fd_info array - we determine types dynamically
+		
+		// No need to initialize fd_info array - we determine types dynamically
 	}
 	else
 	{
@@ -427,13 +525,27 @@ int unicast_handle_fd_event(unicast_parameters_t *unicast_vars,
 	int iRet;
 	//We look what happened for which connection
 	int actual_fd;
-
+	
+	// Debug logging for troubleshooting
+	log_message(log_module, MSG_DEBUG, "unicast_handle_fd_event: pfdsnum=%d", 
+	           unicast_vars->pfdsnum);
 
 	for(actual_fd=0;actual_fd<unicast_vars->pfdsnum;actual_fd++)
 	{
 		iRet=0;
+		
+		// Bounds check to prevent accessing invalid array indices
+		if (actual_fd >= unicast_vars->pfdsnum) {
+			log_message(log_module, MSG_ERROR, "FATAL: Invalid fd index %d - pfdsnum=%d", 
+			           actual_fd, unicast_vars->pfdsnum);
+			abort();
+		}
+		
+		// Determine file descriptor type dynamically
+		int fd_type = get_fd_type(unicast_vars, unicast_vars->pfds[actual_fd].fd);
+		
 		if(((unicast_vars->pfds[actual_fd].revents&POLLHUP)||(unicast_vars->pfds[actual_fd].revents&POLLERR))
-				&&(unicast_vars->fd_info[actual_fd].type==UNICAST_CLIENT))
+				&&(fd_type==UNICAST_CLIENT))
 		{
 			log_message( log_module, MSG_DEBUG,"We've got a POLLHUP or POLLERR. Actual_fd %d socket %d we close the connection \n", actual_fd, unicast_vars->pfds[actual_fd].fd );
 			unicast_close_connection(unicast_vars,unicast_vars->pfds[actual_fd].fd);
@@ -443,8 +555,8 @@ int unicast_handle_fd_event(unicast_parameters_t *unicast_vars,
 		}
 		if((unicast_vars->pfds[actual_fd].revents&POLLIN)||(unicast_vars->pfds[actual_fd].revents&POLLPRI))
 		{
-			if((unicast_vars->fd_info[actual_fd].type==UNICAST_MASTER)||
-					(unicast_vars->fd_info[actual_fd].type==UNICAST_LISTEN_CHANNEL))
+			if((fd_type==UNICAST_MASTER)||
+					(fd_type==UNICAST_LISTEN_CHANNEL))
 			{
 				//Event on the master connection or listening channel
 				//New connection, we accept the connection
@@ -473,36 +585,43 @@ int unicast_handle_fd_event(unicast_parameters_t *unicast_vars,
 					unicast_vars->pfds[unicast_vars->pfdsnum].events = POLLIN | POLLPRI;
 					unicast_vars->pfds[unicast_vars->pfdsnum].revents = 0;
 
-					//Information about the descriptor
-					unicast_vars->fd_info=realloc(unicast_vars->fd_info,(unicast_vars->pfdsnum)*sizeof(unicast_fd_info_t));
-					if (unicast_vars->fd_info==NULL)
-					{
-						log_message( log_module, MSG_ERROR,"Problem with realloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
-						set_interrupted(ERROR_MEMORY<<8);
-						return -1;
-					}
-					//client connection
-					unicast_vars->fd_info[unicast_vars->pfdsnum-1].type=UNICAST_CLIENT;
-					unicast_vars->fd_info[unicast_vars->pfdsnum-1].channel=-1;
-					unicast_vars->fd_info[unicast_vars->pfdsnum-1].client=tempClient;
+					// No need to allocate fd_info array - we determine types dynamically
+					//client connection - no need to store in fd_info array
 
 
 					log_message( log_module, MSG_FLOOD,"Number of clients : %d\n", unicast_vars->client_number);
 
-					if(unicast_vars->fd_info[actual_fd].type==UNICAST_LISTEN_CHANNEL)
+					if(fd_type==UNICAST_LISTEN_CHANNEL)
 					{
 						//Event on a channel connection, we open a new socket for this client and
 						//we store the wanted channel for when we will get the GET
-						log_message( log_module, MSG_DEBUG,"Connection on a channel socket the client  will get the channel %d\n", unicast_vars->fd_info[actual_fd].channel);
-						tempClient->askedChannel=unicast_vars->fd_info[actual_fd].channel;
+						int channel_num = get_channel_for_socket(channels, number_of_channels, unicast_vars->pfds[actual_fd].fd);
+						if (channel_num >= 0) {
+							log_message( log_module, MSG_DEBUG,"Connection on a channel socket the client will get the channel %d\n", channel_num);
+							tempClient->askedChannel = channel_num;
+						} else {
+							log_message(log_module, MSG_ERROR, "Channel not found for socket %d", unicast_vars->pfds[actual_fd].fd);
+						}
 					}
 				}
 			}
-			else if(unicast_vars->fd_info[actual_fd].type==UNICAST_CLIENT)
+			else if(fd_type==UNICAST_CLIENT)
 			{
 				//Event on a client connection i.e. the client asked something
 				log_message( log_module, MSG_FLOOD,"New message for socket %d\n", unicast_vars->pfds[actual_fd].fd);
-				iRet=unicast_handle_message(unicast_vars,unicast_vars->fd_info[actual_fd].client, channels, number_of_channels, strengthparams, auto_p, cam_p, scam_vars,eit_packets);
+				
+				// Find the client associated with this socket
+				unicast_client_t *client = unicast_vars->clients;
+				while (client != NULL && client->Socket != unicast_vars->pfds[actual_fd].fd) {
+					client = client->next;
+				}
+				
+				if (client == NULL) {
+					log_message(log_module, MSG_ERROR, "Client not found for socket %d", unicast_vars->pfds[actual_fd].fd);
+					continue;
+				}
+				
+				iRet=unicast_handle_message(unicast_vars, client, channels, number_of_channels, strengthparams, auto_p, cam_p, scam_vars,eit_packets);
 				if (iRet==-2 ) //iRet==-2 --> 0 received data or error, we close the connection
 				{
 					unicast_close_connection(unicast_vars,unicast_vars->pfds[actual_fd].fd);
@@ -513,8 +632,8 @@ int unicast_handle_fd_event(unicast_parameters_t *unicast_vars,
 			}
 			else
 			{
-				log_message( log_module, MSG_WARN,"File descriptor with bad type, please contact\n Debug information : actual_fd %d unicast_vars->fd_info[actual_fd].type %d\n",
-						actual_fd, unicast_vars->fd_info[actual_fd].type);
+				log_message( log_module, MSG_WARN,"File descriptor with bad type, please contact\n Debug information : actual_fd %d fd_type %d\n",
+						actual_fd, fd_type);
 			}
 		}
 	}
@@ -546,6 +665,9 @@ unicast_client_t *unicast_accept_connection(unicast_parameters_t *unicast_vars, 
 		log_message( log_module, MSG_WARN,"Error when accepting the incoming connection : %s\n", strerror(errno));
 		return NULL;
 	}
+
+	// Configure TCP optimizations for the client socket
+	configure_tcp_optimizations(fromSocket, 0, unicast_vars);  // 0 = client socket
 
 	l = sizeof(struct sockaddr_storage);
 	iRet = getsockname(fromSocket, (struct sockaddr *)&toAddrIn, &l);
@@ -597,7 +719,7 @@ unicast_client_t *unicast_accept_connection(unicast_parameters_t *unicast_vars, 
 		return NULL;
 	}
 
-	tempClient = unicast_add_client(unicast_vars, fromSocket);
+	tempClient = unicast_add_client(unicast_vars, fromSocket, fromBuf);
 
 	return tempClient;
 
@@ -633,14 +755,23 @@ void unicast_close_connection(unicast_parameters_t *unicast_vars, int Socket)
 	}
 
 	log_message( log_module, MSG_FLOOD,"We close the connection\n");
-	//We delete the client
-	unicast_del_client(unicast_vars, unicast_vars->fd_info[actual_fd].client);
-	//We move the last fd to the actual/deleted one, and decrease the number of fds by one
+	
+	// Find the client associated with this socket
+	unicast_client_t *client = unicast_vars->clients;
+	while (client != NULL && client->Socket != unicast_vars->pfds[actual_fd].fd) {
+		client = client->next;
+	}
+	
+	// We delete the client if found
+	if (client != NULL) {
+		unicast_del_client(unicast_vars, client);
+	}
+	
+	// We move the last fd to the actual/deleted one, and decrease the number of fds by one
 	unicast_vars->pfds[actual_fd].fd = unicast_vars->pfds[unicast_vars->pfdsnum-1].fd;
 	unicast_vars->pfds[actual_fd].events = unicast_vars->pfds[unicast_vars->pfdsnum-1].events;
 	unicast_vars->pfds[actual_fd].revents = unicast_vars->pfds[unicast_vars->pfdsnum-1].revents;
-	//we move the file descriptor information
-	unicast_vars->fd_info[actual_fd] = unicast_vars->fd_info[unicast_vars->pfdsnum-1];
+	// No need to move fd_info array - we determine types dynamically
 	//last one set to 0 for poll()
 	unicast_vars->pfds[unicast_vars->pfdsnum-1].fd=0;
 	unicast_vars->pfds[unicast_vars->pfdsnum-1].events=POLLIN|POLLPRI;
@@ -652,12 +783,7 @@ void unicast_close_connection(unicast_parameters_t *unicast_vars, int Socket)
 		log_message( log_module, MSG_ERROR,"Problem with realloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
 		set_interrupted(ERROR_MEMORY<<8);
 	}
-	unicast_vars->fd_info=realloc(unicast_vars->fd_info,(unicast_vars->pfdsnum)*sizeof(unicast_fd_info_t));
-	if (unicast_vars->fd_info==NULL)
-	{
-		log_message( log_module, MSG_ERROR,"Problem with realloc : %s file : %s line %d\n",strerror(errno),__FILE__,__LINE__);
-		set_interrupted(ERROR_MEMORY<<8);
-	}
+	// No need to allocate fd_info array - we determine types dynamically
 	log_message( log_module, MSG_FLOOD,"Number of clients : %d\n", unicast_vars->client_number);
 
 }
@@ -732,6 +858,8 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 		char *substring=NULL;
 		int requested_channel;
 		int iRet;
+		int bycard_error = 0;  // Track if this is a bycard path error
+		int requested_card_id = -1;  // Track the requested card ID for error display
 		requested_channel=0;
 		pos=0;
 		err404=0;
@@ -804,18 +932,108 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 				{
 					int requested_sid;
 					requested_sid=atoi(substring);
-					for(int current_channel=0; current_channel<number_of_channels;current_channel++)
+					
+					// Check if we're in unified mode
+					if (global_unified_system && global_unified_system->unified_storage_v2)
 					{
-						if(channels[current_channel].service_id == requested_sid)
-							requested_channel=current_channel+1;
+						// In unified mode, SID lookups should be card-specific to avoid ambiguity
+						// Find all cards that have this SID
+						int found_cards[16] = {0}; // Max 16 cards
+						int num_found_cards = 0;
+						
+						for (int card_idx = 0; card_idx < global_unified_system->num_cards && num_found_cards < 16; card_idx++)
+						{
+							enhanced_channel_t *card_channels = NULL;
+							int num_card_channels = 0;
+							
+							if (get_channels_for_card_adapter(global_unified_system->cards[card_idx].card_id, &card_channels, &num_card_channels) == 0)
+							{
+								for (int i = 0; i < num_card_channels; i++)
+								{
+									if (card_channels[i].base_channel.service_id == requested_sid)
+									{
+										found_cards[num_found_cards] = global_unified_system->cards[card_idx].card_id;
+										num_found_cards++;
+										break;
+									}
+								}
+								free(card_channels);
+							}
+						}
+						
+						if (num_found_cards == 0)
+						{
+							log_message( log_module, MSG_INFO,"Channel by service id, service_id %d not found in unified mode\n", requested_sid);
+							err404=1;
+							requested_channel=0;
+						}
+						else if (num_found_cards == 1)
+						{
+							// Only one card has this SID, use it directly
+							int card_id = found_cards[0];
+							enhanced_channel_t *card_channels = NULL;
+							int num_card_channels = 0;
+							
+							if (get_channels_for_card_adapter(card_id, &card_channels, &num_card_channels) == 0)
+							{
+								for (int i = 0; i < num_card_channels; i++)
+								{
+									if (card_channels[i].base_channel.service_id == requested_sid)
+									{
+										// Find the channel in the main channels array
+										for (int current_channel=0; current_channel<number_of_channels;current_channel++)
+										{
+											if(channels[current_channel].service_id == requested_sid)
+											{
+												requested_channel=current_channel+1;
+												break;
+											}
+										}
+										break;
+									}
+								}
+								free(card_channels);
+							}
+							
+							if (requested_channel)
+								log_message( log_module, MSG_DEBUG,"Channel by service id, service_id %d found on card %d, number %d\n", requested_sid, card_id, requested_channel);
+							else
+							{
+								log_message( log_module, MSG_INFO,"Channel by service id, service_id %d found on card %d but not in main channel list\n", requested_sid, card_id);
+								err404=1;
+								requested_channel=0;
+							}
+						}
+						else
+						{
+							// Multiple cards have this SID - provide helpful error message
+							log_message( log_module, MSG_INFO,"Channel by service id, service_id %d found on multiple cards (%d cards). In unified mode, please use /bycard/card_id/bysid/%d format to specify which card. Available cards: ", 
+										requested_sid, num_found_cards, requested_sid);
+							for (int i = 0; i < num_found_cards; i++)
+							{
+								log_message( log_module, MSG_INFO,"%d%s", found_cards[i], (i < num_found_cards - 1) ? ", " : "");
+							}
+							log_message( log_module, MSG_INFO,"\n");
+							err404=1;
+							requested_channel=0;
+						}
 					}
-					if(requested_channel)
-						log_message( log_module, MSG_DEBUG,"Channel by service id,  service_id %d number %d\n", requested_sid, requested_channel);
 					else
 					{
-						log_message( log_module, MSG_INFO,"Channel by service id, service_id  %d not found\n",requested_sid);
-						err404=1;
-						requested_channel=0;
+						// Not in unified mode, use original logic
+						for(int current_channel=0; current_channel<number_of_channels;current_channel++)
+						{
+							if(channels[current_channel].service_id == requested_sid)
+								requested_channel=current_channel+1;
+						}
+						if(requested_channel)
+							log_message( log_module, MSG_DEBUG,"Channel by service id,  service_id %d number %d\n", requested_sid, requested_channel);
+						else
+						{
+							log_message( log_module, MSG_INFO,"Channel by service id, service_id  %d not found\n",requested_sid);
+							err404=1;
+							requested_channel=0;
+						}
 					}
 				}
 			}
@@ -870,6 +1088,168 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
                     }
 				}
 			}
+			//Channel by card (prefix for byname and bysid)
+			//GET /bycard/card_id/byname/channelname or /bycard/card_id/bysid/sid
+			else if(strstr(client->buffer +pos ,"/bycard/")==(client->buffer +pos))
+			{
+				if(client->chan_ptr!=NULL)
+				{
+					log_message( log_module, MSG_INFO,"A channel (%s) is already streamed to this client, it shouldn't ask for a new one without closing the connection, error 501\n",client->chan_ptr->name);
+					iRet=write(client->Socket,HTTP_501_REPLY, strlen(HTTP_501_REPLY));
+					if(iRet<0)
+						log_message( log_module, MSG_INFO,"Error writing reply\n");
+					return -2; //to delete the client
+				}
+				
+				pos+=strlen("/bycard/");
+				char *card_substring = strtok (client->buffer+pos, "/");
+				if(card_substring == NULL)
+				{
+					err404=1;
+				}
+				else
+				{
+					int requested_card_id = atoi(card_substring);
+					log_message( log_module, MSG_DEBUG,"Channel by card, card_id %d\n", requested_card_id);
+					
+					// Check if we have a unified system with storage v2
+					if (global_unified_system && global_unified_system->unified_storage_v2)
+					{
+						enhanced_channel_t *card_channels = NULL;
+						int num_card_channels = 0;
+						
+						// Get channels for this specific card
+						if (get_channels_for_card_adapter(requested_card_id, &card_channels, &num_card_channels) == 0 && num_card_channels > 0)
+						{
+							// Now check if the next part is byname or bysid
+							char *remaining_path = strtok(NULL, " ");
+							if(remaining_path == NULL)
+							{
+								err404=1;
+							}
+							else if(strstr(remaining_path, "/byname/") == remaining_path)
+							{
+								// Handle bycard/card_id/byname/channelname
+								char *name_start = remaining_path + strlen("/byname/");
+								char *end = strstr(name_start, " HTTP");
+								
+								if(*name_start == 0) {
+									err404=1;
+								}
+								else if(end == NULL) {
+									err404=1;
+									log_message( log_module, MSG_DEBUG,"Channel name was not found in the URL `%s`\n", name_start);
+								}
+								else
+								{
+									end[0] = '\0'; // add string terminator to be able to get channel name
+									
+									char requested_channel_name[MAX_NAME_LEN];
+									char current_channel_name[MAX_NAME_LEN];
+									strncpy(requested_channel_name, name_start, MAX_NAME_LEN);
+									requested_channel_name[MAX_NAME_LEN-1] = '\0';
+									process_channel_name(requested_channel_name);
+									
+									// Search only in channels from this card
+									for(int i = 0; i < num_card_channels; i++)
+									{
+										strcpy(current_channel_name, card_channels[i].base_channel.name);
+										process_channel_name(current_channel_name);
+										
+										if(strcasecmp(current_channel_name, requested_channel_name) == 0)
+										{
+											// Find the channel in the main channels array
+											for(int current_channel=0; current_channel<number_of_channels;current_channel++)
+											{
+												if(channels[current_channel].service_id == card_channels[i].base_channel.service_id)
+												{
+													requested_channel=current_channel+1;
+													break;
+												}
+											}
+											break;
+										}
+									}
+									
+									if(requested_channel)
+										log_message( log_module, MSG_DEBUG,"Channel by card and name, card_id %d, name `%s` number `%d`\n", requested_card_id, requested_channel_name, requested_channel);
+									else
+									{
+										log_message( log_module, MSG_INFO,"Channel by card and name, card_id %d, name `%s` not found in card channel list\n", requested_card_id, requested_channel_name);
+										err404=1;
+										requested_channel=0;
+									}
+								}
+							}
+							else if(strstr(remaining_path, "/bysid/") == remaining_path)
+							{
+								// Handle bycard/card_id/bysid/sid
+								char *sid_start = remaining_path + strlen("/bysid/");
+								char *end = strstr(sid_start, " HTTP");
+								
+								if(*sid_start == 0) {
+									err404=1;
+								}
+								else if(end == NULL) {
+									err404=1;
+									log_message( log_module, MSG_DEBUG,"Service ID was not found in the URL `%s`\n", sid_start);
+								}
+								else
+								{
+									end[0] = '\0'; // add string terminator to be able to get service id
+									int requested_sid = atoi(sid_start);
+									
+									// Search only in channels from this card
+									for(int i = 0; i < num_card_channels; i++)
+									{
+										if(card_channels[i].base_channel.service_id == requested_sid)
+										{
+											// Find the channel in the main channels array
+											for(int current_channel=0; current_channel<number_of_channels;current_channel++)
+											{
+												if(channels[current_channel].service_id == requested_sid)
+												{
+													requested_channel=current_channel+1;
+													break;
+												}
+											}
+											break;
+										}
+									}
+									
+									if(requested_channel)
+										log_message( log_module, MSG_DEBUG,"Channel by card and service id, card_id %d, service_id %d number %d\n", requested_card_id, requested_sid, requested_channel);
+									else
+									{
+										log_message( log_module, MSG_INFO,"Channel by card and service id, card_id %d, service_id %d not found in card channel list\n", requested_card_id, requested_sid);
+										err404=1;
+										requested_channel=0;
+									}
+								}
+							}
+							else
+							{
+								log_message( log_module, MSG_INFO,"Invalid bycard path, expected /byname/ or /bysid/ after card_id\n");
+								err404=1;
+								bycard_error = 1;  // Mark this as a bycard path error
+								// requested_card_id is already set above
+							}
+							
+							free(card_channels);
+						}
+						else
+						{
+							log_message( log_module, MSG_INFO,"No channels found for card_id %d\n", requested_card_id);
+							err404=1;
+						}
+					}
+					else
+					{
+						log_message( log_module, MSG_INFO,"Unified system v2 not available for bycard method\n");
+						err404=1;
+					}
+				}
+			}
 			//Channels list
 			else if(strstr(client->buffer +pos ,"/channels_list.html ")==(client->buffer +pos))
 			{
@@ -883,13 +1263,77 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 				else
 					substring=NULL;
 				log_message( log_module, MSG_DETAIL,"Channel list\n");
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				log_message(log_module, MSG_INFO, "Channels list: checking unified storage v2 (global_unified_system=%p, unified_storage_v2=%p)", 
+				           (void*)global_unified_system, (void*)(global_unified_system ? global_unified_system->unified_storage_v2 : NULL));
+				
+				if (global_unified_system && global_unified_system->unified_storage_v2 &&
+				    get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+				    num_enhanced_channels > 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2", num_unified_channels);
+						unicast_send_streamed_channels_list(num_unified_channels, unified_base_channels, client->Socket, substring);
+						free(unified_base_channels);
+						free(enhanced_channels);
+						return -2;
+					}
+					free(enhanced_channels);
+				} else {
+					log_message(log_module, MSG_INFO, "Channels list: unified storage v2 not available or empty, falling back to regular channels (num_enhanced_channels=%d)", 
+					           num_enhanced_channels);
+				}
+				
+				// Fallback to regular channels
+				log_message(log_module, MSG_INFO, "Channels list: using regular channels (number_of_channels=%d)", number_of_channels);
 				unicast_send_streamed_channels_list (number_of_channels, channels, client->Socket, substring);
+				return -2; //We close the connection afterwards
+			}
+			//Card utilization status
+			else if(strstr(client->buffer +pos ,"/card_status.json ")==(client->buffer +pos))
+			{
+				log_message( log_module, MSG_DETAIL,"Card utilization status\n");
+				unicast_send_card_utilization_status(client->Socket);
 				return -2; //We close the connection afterwards
 			}
 			//playlist, m3u
 			else if(strstr(client->buffer +pos ,"/playlist.m3u ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"play list\n");
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				if (global_unified_system && global_unified_system->unified_storage_v2 &&
+				    get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+				    num_enhanced_channels > 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for playlist", num_unified_channels);
+						unicast_send_play_list_unicast(num_unified_channels, unified_base_channels, client->Socket, unicast_vars->portOut, 0, unicast_vars);
+						free(unified_base_channels);
+						free(enhanced_channels);
+						return -2;
+					}
+					free(enhanced_channels);
+				}
+				
+				// Fallback to regular channels
 				unicast_send_play_list_unicast (number_of_channels, channels, client->Socket, unicast_vars->portOut, 0, unicast_vars );
 				return -2; //We close the connection afterwards
 			}
@@ -897,18 +1341,93 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 			else if(strstr(client->buffer +pos ,"/playlist_port.m3u ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"play list\n");
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				if (global_unified_system && global_unified_system->unified_storage_v2 &&
+				    get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+				    num_enhanced_channels > 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for playlist_port", num_unified_channels);
+						unicast_send_play_list_unicast(num_unified_channels, unified_base_channels, client->Socket, unicast_vars->portOut, 1, unicast_vars);
+						free(unified_base_channels);
+						free(enhanced_channels);
+						return -2;
+					}
+					free(enhanced_channels);
+				}
+				
+				// Fallback to regular channels
 				unicast_send_play_list_unicast (number_of_channels, channels, client->Socket, unicast_vars->portOut, 1, unicast_vars );
 				return -2; //We close the connection afterwards
 			}
 			else if(strstr(client->buffer +pos ,"/playlist_multicast.m3u ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"play list\n");
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				if (global_unified_system && global_unified_system->unified_storage_v2 &&
+				    get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+				    num_enhanced_channels > 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for playlist_multicast", num_unified_channels);
+						unicast_send_play_list_multicast(num_unified_channels, unified_base_channels, client->Socket, 0, unicast_vars);
+						free(unified_base_channels);
+						free(enhanced_channels);
+						return -2;
+					}
+					free(enhanced_channels);
+				}
+				
+				// Fallback to regular channels
 				unicast_send_play_list_multicast (number_of_channels, channels, client->Socket, 0, unicast_vars );
 				return -2; //We close the connection afterwards
 			}
 			else if(strstr(client->buffer +pos ,"/playlist_multicast_vlc.m3u ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"play list\n");
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				if (global_unified_system && global_unified_system->unified_storage_v2 &&
+				    get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+				    num_enhanced_channels > 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for playlist_multicast_vlc", num_unified_channels);
+						unicast_send_play_list_multicast(num_unified_channels, unified_base_channels, client->Socket, 1, unicast_vars);
+						free(unified_base_channels);
+						free(enhanced_channels);
+						return -2;
+					}
+					free(enhanced_channels);
+				}
+				
+				// Fallback to regular channels
 				unicast_send_play_list_multicast (number_of_channels, channels, client->Socket, 1, unicast_vars );
 				return -2; //We close the connection afterwards
 			}
@@ -916,6 +1435,31 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 			else if(strstr(client->buffer +pos ,"/channels_list.json ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"Channel list Json\n");
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				if (global_unified_system && global_unified_system->unified_storage_v2 &&
+				    get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+				    num_enhanced_channels > 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for JSON", num_unified_channels);
+						unicast_send_streamed_channels_list_js(num_unified_channels, unified_base_channels, scam_vars, client->Socket);
+						free(unified_base_channels);
+						free(enhanced_channels);
+						return -2;
+					}
+					free(enhanced_channels);
+				}
+				
+				// Fallback to regular channels
 				unicast_send_streamed_channels_list_js (number_of_channels, channels, scam_vars, client->Socket);
 				return -2; //We close the connection afterwards
 			}
@@ -978,6 +1522,13 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
                 unicast_send_prometheus(number_of_channels, channels, client->Socket, strengthparams);
                 return -2; //We close the connection afterwards
             }
+            //Tuner scan results
+            else if(strstr(client->buffer +pos ,"/tuner_scan_results.html")==(client->buffer +pos))
+            {
+                log_message( log_module, MSG_DETAIL,"HTTP request for tuner scan results\n");
+                unicast_send_tuner_scan_results(client->Socket);
+                return -2; //We close the connection afterwards
+            }
 			//Not implemented path --> 404
 			else
 				err404=1;
@@ -991,7 +1542,40 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					log_message( log_module, MSG_INFO,"Error when creating the HTTP reply\n");
 					return -2;
 				}
-				unicast_reply_write(reply, HTTP_404_REPLY_HTML, VERSION);
+				
+				// Check if this is a bycard path error and show card list
+				if (bycard_error) {
+					unicast_reply_write(reply, "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml10/DTD/xhtml10strict.dtd\">\r\n");
+					unicast_reply_write(reply, "<html lang=\"en\">\r\n");
+					unicast_reply_write(reply, "<head>\r\n");
+					unicast_reply_write(reply, "<title>Invalid bycard path - MuMuDVB</title>\r\n");
+					unicast_reply_write(reply, "<style>");
+					unicast_reply_write(reply, "body { font-family: Arial, sans-serif; margin: 20px; }");
+					unicast_reply_write(reply, "h1 { color: #d32f2f; }");
+					unicast_reply_write(reply, "h3 { color: #1976d2; }");
+					unicast_reply_write(reply, "table { border-collapse: collapse; width: 100%%; margin: 10px 0; }");
+					unicast_reply_write(reply, "th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }");
+					unicast_reply_write(reply, "th { background-color: #f2f2f2; }");
+					unicast_reply_write(reply, "code { background-color: #f5f5f5; padding: 2px 4px; border-radius: 3px; }");
+					unicast_reply_write(reply, "</style>");
+					unicast_reply_write(reply, "</head>\r\n");
+					unicast_reply_write(reply, "<body>\r\n");
+					unicast_reply_write(reply, "<h1>404 - Invalid bycard path</h1>\r\n");
+					unicast_reply_write(reply, "<p><strong>Error:</strong> Invalid bycard path, expected /byname/ or /bysid/ after card_id</p>\r\n");
+					unicast_reply_write(reply, "<hr />\r\n");
+					
+					// Generate the cards list
+					unicast_generate_cards_list_html(reply, requested_card_id);
+					
+					unicast_reply_write(reply, "<hr />\r\n");
+					unicast_reply_write(reply, "<a href=\"http://mumudvb.net/\">MuMuDVB</a> version %s\r\n", VERSION);
+					unicast_reply_write(reply, "</body>\r\n");
+					unicast_reply_write(reply, "</html>\r\n");
+				} else {
+					// Use the standard 404 response for other errors
+					unicast_reply_write(reply, HTTP_404_REPLY_HTML, VERSION);
+				}
+				
 				unicast_reply_send(reply, client->Socket, 404, "text/html");
 				if (0 != unicast_reply_free(reply)) {
 					log_message( log_module, MSG_INFO,"Error when releasing the HTTP reply after sendinf it\n");
@@ -1039,7 +1623,6 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 //////////////////
 // HTTP Toolbox //
 //////////////////
-
 
 
 /** @brief Init reply structure
@@ -1142,7 +1725,10 @@ int unicast_reply_write(struct unicast_reply *reply, const char* msg, ...)
 	}
 	int real_len = vsnprintf(*buffer+*used, *length - *used, msg, args);
 	if (real_len != estimated_len) {
-		log_message( log_module, MSG_WARN,"Error when writing the HTTP reply\n");
+		log_message( log_module, MSG_ERROR,"Error when writing the HTTP reply: estimated=%d, actual=%d, buffer_size=%d, used=%d\n", 
+		           estimated_len, real_len, *length, *used);
+		va_end(args);
+		return -1;
 	}
 	*used += real_len;
 	va_end(args);
@@ -1244,6 +1830,66 @@ unicast_send_streamed_channels_list (int number_of_channels, mumudvb_channel_t *
 		log_message( log_module, MSG_INFO,"Error when releasing the HTTP reply after sendinf it\n");
 		return -1;
 	}
+
+	return 0;
+}
+
+/** @brief Generate HTML for available cards list
+ *
+ * @param reply the unicast reply structure to write to
+ * @param requested_card_id the card ID that was requested (if any)
+ * @return 0 on success, -1 on error
+ */
+int
+unicast_generate_cards_list_html(struct unicast_reply* reply, int requested_card_id)
+{
+	if (!reply) {
+		return -1;
+	}
+
+	// Check if we have a unified system
+	if (!global_unified_system || global_unified_system->num_cards <= 0) {
+		unicast_reply_write(reply, "<p><strong>No cards available.</strong> The unified system is not initialized or no cards are configured.</p>");
+		return 0;
+	}
+
+	unicast_reply_write(reply, "<h3>Available Cards:</h3>");
+	unicast_reply_write(reply, "<table border=\"1\" cellpadding=\"5\" cellspacing=\"0\" style=\"border-collapse: collapse;\">");
+	unicast_reply_write(reply, "<tr><th>Card ID</th><th>Device Path</th><th>Frontend Name</th><th>Status</th><th>Current Frequency</th><th>In Use</th><th>Usage Examples</th></tr>");
+
+	for (int card_idx = 0; card_idx < global_unified_system->num_cards; card_idx++) {
+		unified_card_t *card = &global_unified_system->cards[card_idx];
+		const char *status_class = (card_idx == requested_card_id) ? "style=\"background-color: #ffeb3b;\"" : "";
+		
+		unicast_reply_write(reply, "<tr %s>", status_class);
+		unicast_reply_write(reply, "<td><strong>%d</strong></td>", card->card_id);
+		unicast_reply_write(reply, "<td>/dev/dvb/adapter%d/</td>", card->card_id);
+		unicast_reply_write(reply, "<td>%s</td>", 
+		                   card->tune_params ? card->tune_params->fe_name : "Unknown");
+		unicast_reply_write(reply, "<td>%s</td>", 
+		                   card->tune_params && card->tune_params->card_tuned ? "Tuned" : "Not Tuned");
+		unicast_reply_write(reply, "<td>%.1f MHz</td>", card->current_freq / 1000000.0);
+		unicast_reply_write(reply, "<td>%s</td>", card->in_use ? "Yes" : "No");
+		unicast_reply_write(reply, "<td><small>");
+		unicast_reply_write(reply, "/bycard/%d/byname/&lt;channel_name&gt;<br/>", card->card_id);
+		unicast_reply_write(reply, "/bycard/%d/bysid/&lt;service_id&gt;</small></td>", card->card_id);
+		unicast_reply_write(reply, "</tr>");
+	}
+
+	unicast_reply_write(reply, "</table>");
+	
+	if (requested_card_id >= 0) {
+		unicast_reply_write(reply, "<p><strong>Note:</strong> The requested card ID %d is highlighted above. ", requested_card_id);
+		unicast_reply_write(reply, "Make sure to use the correct path format: <code>/bycard/&lt;card_id&gt;/byname/&lt;channel_name&gt;</code> or <code>/bycard/&lt;card_id&gt;/bysid/&lt;service_id&gt;</code></p>");
+	}
+	
+	unicast_reply_write(reply, "<p><strong>Usage:</strong> To access channels on a specific card, use one of these URL patterns:</p>");
+	unicast_reply_write(reply, "<ul>");
+	unicast_reply_write(reply, "<li><code>/bycard/&lt;card_id&gt;/byname/&lt;channel_name&gt;</code> - Access channel by name on specific card</li>");
+	unicast_reply_write(reply, "<li><code>/bycard/&lt;card_id&gt;/bysid/&lt;service_id&gt;</code> - Access channel by service ID on specific card</li>");
+	unicast_reply_write(reply, "<li><code>/byname/&lt;channel_name&gt;</code> - Access channel by name (any available card)</li>");
+	unicast_reply_write(reply, "<li><code>/bysid/&lt;service_id&gt;</code> - Access channel by service ID (any available card)</li>");
+	unicast_reply_write(reply, "</ul>");
 
 	return 0;
 }
@@ -1358,6 +2004,7 @@ unicast_send_index_page (int Socket)
 	unicast_reply_write(reply, "<br>  <a href=\"/monitor/state.xml\">Server state : channel list, pids, traffic (XML)</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br>  <a href=\"/monitor/state.json\">Server state : channel list, pids, traffic (json)</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br>  <a href=\"/monitor/EIT.json\">Contents of the EIT tables (json)</a><br><br>\r\n");
+	unicast_reply_write(reply, "<br>  <a href=\"/tuner_scan_results.html\">Tuner Scan Results</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br>  <a href=\"/cam/menu.xml\">CAM menu</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br> make an action on the cam menu : /cam/action.xml?key=<br><br>\r\n");
 
@@ -1457,4 +2104,292 @@ void process_channel_name(char *str) {
     }
 
     str[i - begin] = '\0';
+}
+
+/** @brief Send card utilization status as JSON
+ *
+ * @param Socket the socket on which the information has to be sent
+ */
+int unicast_send_card_utilization_status(int Socket)
+{
+	char json_buffer[8192];
+	int json_length = generate_card_utilization_json(json_buffer, sizeof(json_buffer));
+	
+	if (json_length <= 0) {
+		log_message(log_module, MSG_ERROR, "Failed to generate card utilization JSON");
+		return -1;
+	}
+	
+	// Send HTTP headers
+	char http_headers[512];
+	int header_length = snprintf(http_headers, sizeof(http_headers),
+		"HTTP/1.1 200 OK\r\n"
+		"Content-Type: application/json\r\n"
+		"Content-Length: %d\r\n"
+		"Access-Control-Allow-Origin: *\r\n"
+		"Connection: close\r\n"
+		"\r\n", json_length);
+	
+	// Send headers
+	if (write(Socket, http_headers, header_length) != header_length) {
+		log_message(log_module, MSG_ERROR, "Failed to send card utilization HTTP headers");
+		return -1;
+	}
+	
+	// Send JSON data
+	if (write(Socket, json_buffer, json_length) != json_length) {
+		log_message(log_module, MSG_ERROR, "Failed to send card utilization JSON data");
+		return -1;
+	}
+	
+	return 0;
+}
+
+/** @brief Send tuner scan results as HTML table
+ * @param Socket the socket on which the information have to be sent
+ */
+int unicast_send_tuner_scan_results(int Socket)
+{
+	struct unicast_reply* reply = unicast_reply_init();
+	if (NULL == reply) {
+		log_message(log_module, MSG_INFO, "Error when creating the HTTP reply\n");
+		return -1;
+	}
+
+	// Get scan results from parallel card manager
+	extern int get_parallel_scan_results_count(void);
+	extern int get_parallel_scan_results(card_frequency_result_t *results, int max_results);
+	extern int is_initial_scan_complete(void);
+	
+	// Check if we're in single card/frequency mode
+	extern unified_channel_system_t unified_system;
+	int is_single_card_mode = (unified_system.num_cards == 1 && unified_system.num_frequencies == 1);
+	
+	int max_results = get_parallel_scan_results_count();
+	int scan_complete = is_initial_scan_complete();
+	
+	// Get refresh delay from configuration (default: 300 seconds)
+	extern unicast_parameters_t *global_unicast_params;
+	int refresh_delay = 300; // Default fallback
+	if (global_unicast_params) {
+		refresh_delay = global_unicast_params->scan_results_refresh_delay;
+	}
+	
+	// Start HTML response
+	unicast_reply_write(reply, "<html><head><title>MuMuDVB - Tuner Scan Results</title>");
+	unicast_reply_write(reply, "<meta http-equiv=\"refresh\" content=\"%d\">", refresh_delay); // Auto-refresh with configurable delay
+	unicast_reply_write(reply, "<style>");
+	unicast_reply_write(reply, "table { border-collapse: collapse; width: 100%; }");
+	unicast_reply_write(reply, "th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }");
+	unicast_reply_write(reply, "th { background-color: #f2f2f2; }");
+	unicast_reply_write(reply, ".success { background-color: #d4edda; }");
+	unicast_reply_write(reply, ".failed { background-color: #f8d7da; }");
+	unicast_reply_write(reply, ".scanning { background-color: #fff3cd; }");
+	unicast_reply_write(reply, ".progress { background-color: #e7f3ff; padding: 10px; margin: 10px 0; border-radius: 5px; }");
+	unicast_reply_write(reply, "</style></head><body>");
+	
+	unicast_reply_write(reply, "<h1>MuMuDVB Tuner Scan Results</h1>");
+	
+	// Check if we're in single card/frequency mode
+	if (is_single_card_mode) {
+		unicast_reply_write(reply, "<div class=\"progress\" style=\"background-color: #e7f3ff;\">");
+		unicast_reply_write(reply, "<h3>ℹ️ Single Card/Frequency Mode</h3>");
+		unicast_reply_write(reply, "<p>System is operating in single card/frequency mode. Tuner scan results are not applicable in this configuration.</p>");
+		unicast_reply_write(reply, "<p><strong>Current configuration:</strong> %d card, %d frequency</p>", unified_system.num_cards, unified_system.num_frequencies);
+		unicast_reply_write(reply, "<p>For tuner scan results, configure multiple cards or frequencies using the unified system.</p>");
+		unicast_reply_write(reply, "</div>");
+		unicast_reply_write(reply, "<p><a href=\"/\">Back to main page</a></p>");
+		unicast_reply_write(reply, "</body></html>");
+		unicast_reply_send(reply, Socket, 200, "text/html");
+		unicast_reply_free(reply);
+		return 0;
+	}
+	
+	// Show scanning status for parallel mode
+	if (!scan_complete) {
+		unicast_reply_write(reply, "<div class=\"progress\">");
+		unicast_reply_write(reply, "<h3>🔄 Scanning in Progress...</h3>");
+		unicast_reply_write(reply, "<p>Results are being updated in real-time. This page will refresh automatically every %d seconds.</p>", refresh_delay);
+		if (max_results > 0) {
+			unicast_reply_write(reply, "<p><strong>Partial results available:</strong> %d scan results completed so far</p>", max_results);
+		} else {
+			unicast_reply_write(reply, "<p><strong>Status:</strong> Starting scan, no results yet...</p>");
+		}
+		unicast_reply_write(reply, "</div>");
+	} else {
+		unicast_reply_write(reply, "<div class=\"progress\" style=\"background-color: #d4edda;\">");
+		unicast_reply_write(reply, "<h3>✅ Scan Complete</h3>");
+		unicast_reply_write(reply, "<p>All cards have been tested against all frequencies.</p>");
+		unicast_reply_write(reply, "</div>");
+	}
+	
+	if (max_results <= 0) {
+		unicast_reply_write(reply, "<p>No scan results available yet. Please wait for scanning to complete.</p>");
+		unicast_reply_write(reply, "</body></html>");
+		unicast_reply_send(reply, Socket, 200, "text/html");
+		unicast_reply_free(reply);
+		return 0;
+	}
+	
+	card_frequency_result_t *results = malloc(max_results * sizeof(card_frequency_result_t));
+	if (!results) {
+		unicast_reply_write(reply, "<p>Error: Unable to allocate memory for scan results.</p>");
+		unicast_reply_write(reply, "</body></html>");
+		unicast_reply_send(reply, Socket, 200, "text/html");
+		unicast_reply_free(reply);
+		return -1;
+	}
+	
+	int actual_results = get_parallel_scan_results(results, max_results);
+	
+	
+	// Calculate summary statistics
+	int total_channels = 0;
+	int successful_scans = 0;
+	for (int i = 0; i < actual_results; i++) {
+		total_channels += results[i].channel_count;
+		if (results[i].status == 1) successful_scans++;
+	}
+	
+	// Show summary with progress information
+	if (!scan_complete) {
+		unicast_reply_write(reply, "<p><strong>Progress:</strong> %d results completed | Successful: %d | Channels found: %d | <em>Scanning continues...</em></p>", 
+		                    actual_results, successful_scans, total_channels);
+	} else {
+		unicast_reply_write(reply, "<p><strong>Final Results:</strong> %d total results | Successful scans: %d | Total channels found: %d</p>", 
+		                    actual_results, successful_scans, total_channels);
+	}
+	
+	// Sort results based on query parameter
+	// For now, use default sorting since we don't have access to the client buffer here
+	// TODO: Pass query parameters as function parameter or use a different approach
+	char *sort_by = "card"; // default sort
+	
+	// Add sorting options with current sort indicator
+	unicast_reply_write(reply, "<p>Sort by: ");
+	unicast_reply_write(reply, "<a href=\"/tuner_scan_results.html?sort=card\">%sCard%s</a> | ", 
+	                    (strcmp(sort_by, "card") == 0) ? "<strong>" : "", 
+	                    (strcmp(sort_by, "card") == 0) ? "</strong>" : "");
+	unicast_reply_write(reply, "<a href=\"/tuner_scan_results.html?sort=frequency\">%sFrequency%s</a> | ", 
+	                    (strcmp(sort_by, "frequency") == 0) ? "<strong>" : "", 
+	                    (strcmp(sort_by, "frequency") == 0) ? "</strong>" : "");
+	unicast_reply_write(reply, "<a href=\"/tuner_scan_results.html?sort=channels\">%sChannels%s</a> | ", 
+	                    (strcmp(sort_by, "channels") == 0) ? "<strong>" : "", 
+	                    (strcmp(sort_by, "channels") == 0) ? "</strong>" : "");
+	unicast_reply_write(reply, "<a href=\"/tuner_scan_results.html?sort=status\">%sStatus%s</a></p>", 
+	                    (strcmp(sort_by, "status") == 0) ? "<strong>" : "", 
+	                    (strcmp(sort_by, "status") == 0) ? "</strong>" : "");
+	
+	// Sort the results array
+	if (strcmp(sort_by, "card") == 0) {
+		// Sort by card ID
+		for (int i = 0; i < actual_results - 1; i++) {
+			for (int j = i + 1; j < actual_results; j++) {
+				if (results[i].card_id > results[j].card_id) {
+					card_frequency_result_t temp = results[i];
+					results[i] = results[j];
+					results[j] = temp;
+				}
+			}
+		}
+	} else if (strcmp(sort_by, "frequency") == 0) {
+		// Sort by frequency
+		for (int i = 0; i < actual_results - 1; i++) {
+			for (int j = i + 1; j < actual_results; j++) {
+				if (results[i].frequency > results[j].frequency) {
+					card_frequency_result_t temp = results[i];
+					results[i] = results[j];
+					results[j] = temp;
+				}
+			}
+		}
+	} else if (strcmp(sort_by, "channels") == 0) {
+		// Sort by channel count (descending)
+		for (int i = 0; i < actual_results - 1; i++) {
+			for (int j = i + 1; j < actual_results; j++) {
+				if (results[i].channel_count < results[j].channel_count) {
+					card_frequency_result_t temp = results[i];
+					results[i] = results[j];
+					results[j] = temp;
+				}
+			}
+		}
+	} else if (strcmp(sort_by, "status") == 0) {
+		// Sort by status (successful first)
+		for (int i = 0; i < actual_results - 1; i++) {
+			for (int j = i + 1; j < actual_results; j++) {
+				if (results[i].status < results[j].status) {
+					card_frequency_result_t temp = results[i];
+					results[i] = results[j];
+					results[j] = temp;
+				}
+			}
+		}
+	}
+	
+	unicast_reply_write(reply, "<table>");
+	unicast_reply_write(reply, "<tr><th>Card</th><th>Frequency (MHz)</th><th>FE Status</th><th>Signal</th><th>SNR</th><th>Channels</th><th>Lock Time</th><th>Quality</th></tr>");
+	
+	for (int i = 0; i < actual_results; i++) {
+		const char *status_class;
+		if (results[i].status == 1) {
+			status_class = "success";
+		} else if (results[i].status == 0) {
+			status_class = "failed";
+		} else {
+			status_class = "scanning"; // For any other status
+		}
+		
+		// Format FE_STATUS flags as readable text
+		char fe_status_text[256] = "";
+		if (results[i].fe_status_flags & 0x01) strcat(fe_status_text, "SIGNAL ");
+		if (results[i].fe_status_flags & 0x02) strcat(fe_status_text, "CARRIER ");
+		if (results[i].fe_status_flags & 0x04) strcat(fe_status_text, "VITERBI ");
+		if (results[i].fe_status_flags & 0x08) strcat(fe_status_text, "SYNC ");
+		if (results[i].fe_status_flags & 0x10) strcat(fe_status_text, "LOCK ");
+		if (strlen(fe_status_text) == 0) strcat(fe_status_text, "NONE");
+		
+		int quality_score = results[i].signal_strength + (results[i].snr / 10);
+		
+		unicast_reply_write(reply, "<tr class=\"%s\">", status_class);
+		unicast_reply_write(reply, "<td>%d</td>", results[i].card_id);
+		unicast_reply_write(reply, "<td>%.1f</td>", results[i].frequency / 1000000.0);
+		unicast_reply_write(reply, "<td>%s</td>", fe_status_text);
+		unicast_reply_write(reply, "<td>%d</td>", results[i].signal_strength);
+		unicast_reply_write(reply, "<td>%d</td>", results[i].snr);
+		// Display channel count with highlighting and debugging info
+		if (results[i].channel_count > 0) {
+			unicast_reply_write(reply, "<td style=\"background-color: #d1ecf1; font-weight: bold; color: #0c5460;\">%d</td>", results[i].channel_count);
+		} else {
+			unicast_reply_write(reply, "<td style=\"color: #6c757d;\">%d</td>", results[i].channel_count);
+		}
+		unicast_reply_write(reply, "<td>%d ms</td>", results[i].lock_time_ms);
+		unicast_reply_write(reply, "<td>%d</td>", quality_score);
+		unicast_reply_write(reply, "</tr>");
+	}
+	
+	unicast_reply_write(reply, "</table>");
+	// Add debug information section (only show if there are issues)
+	if (total_channels == 0 && actual_results > 0) {
+		unicast_reply_write(reply, "<div style=\"background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin: 10px 0; border-radius: 5px;\">");
+		unicast_reply_write(reply, "<h4>🔍 Debug Information</h4>");
+		unicast_reply_write(reply, "<p><strong>Issue:</strong> No channels found in scan results. This might indicate:</p>");
+		unicast_reply_write(reply, "<ul>");
+		unicast_reply_write(reply, "<li>Channels are being discovered but not properly stored in scan results</li>");
+		unicast_reply_write(reply, "<li>Channel discovery is happening after scan results are generated</li>");
+		unicast_reply_write(reply, "<li>There's a timing issue between parallel scanning and channel storage</li>");
+		unicast_reply_write(reply, "</ul>");
+		unicast_reply_write(reply, "<p><strong>Debug data:</strong> %d results, %d successful scans, %d total channels</p>", 
+		                   actual_results, successful_scans, total_channels);
+		unicast_reply_write(reply, "</div>");
+	}
+	
+	unicast_reply_write(reply, "<p><a href=\"/\">Back to main page</a></p>");
+	unicast_reply_write(reply, "</body></html>");
+	
+	unicast_reply_send(reply, Socket, 200, "text/html");
+	
+	free(results);
+	unicast_reply_free(reply);
+	return 0;
 }

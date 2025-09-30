@@ -549,6 +549,27 @@ vlc http://10.0.0.1:4242/byname/your-tv-station-name
 
 will give you the channel with name "Your TV station name". This works also with xine and mplayer.
 
+Get the channel by card and name or service id
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+You can ask for a channel by specifying both the card ID and either the channel name or service ID. This is useful when you have multiple DVB cards and want to ensure you get a channel from a specific card.
+
+The format is `/bycard/card_id/byname/channelname` or `/bycard/card_id/bysid/sid`.
+
+If you server is listening on the ip 10.0.0.1 and the port 4242,
+
+----------------------------------------------------
+vlc http://10.0.0.1:4242/bycard/0/byname/your-tv-station-name
+----------------------------------------------------
+
+will give you the channel with name "Your TV station name" from card 0.
+
+----------------------------------------------------
+vlc http://10.0.0.1:4242/bycard/1/bysid/100
+----------------------------------------------------
+
+will give you the channel with service ID 100 from card 1. This works also with xine and mplayer.
+
 Get the channels list
 ^^^^^^^^^^^^^^^^^^^^^
 

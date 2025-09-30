@@ -427,8 +427,9 @@ void log_message( char* log_module, int type,
  *
  * @param number_of_channels the number of channels
  * @param channels : the channels array
+ * @param card_id : the DVB card ID (use -1 if not applicable)
  */
-void log_streamed_channels(char *log_module,int number_of_channels, mumudvb_channel_t *channels, int multicast_ipv4,int multicast_ipv6, int unicast, int unicast_master_port, char *unicastipOut)
+void log_streamed_channels(char *log_module,int number_of_channels, mumudvb_channel_t *channels, int multicast_ipv4,int multicast_ipv6, int unicast, int unicast_master_port, char *unicastipOut, int card_id)
 {
 	int curr_channel;
 	int curr_pid;
@@ -440,16 +441,48 @@ void log_streamed_channels(char *log_module,int number_of_channels, mumudvb_chan
 			num_chan_ready++;
 	}
 
-	log_message( log_module,  MSG_INFO, "Diffusion %d channel%s\n", num_chan_ready,
-			(number_of_channels <= 1 ? "" : "s"));
+	// Show card information if available
+	if (card_id >= 0) {
+		log_message( log_module,  MSG_INFO, "card-%d Broadcasting %d channel%s\n", card_id, num_chan_ready,
+				(number_of_channels <= 1 ? "" : "s"));
+	} else {
+		log_message( log_module,  MSG_INFO, "Diffusion %d channel%s\n", num_chan_ready,
+				(number_of_channels <= 1 ? "" : "s"));
+	}
+	
+	// Check if all channels use the same unicast port to avoid redundant messages
+	int all_same_unicast_port = 1;
+	int first_unicast_port = -1;
+	if (unicast && num_chan_ready > 1) {
+		for (curr_channel = 0; curr_channel < number_of_channels; curr_channel++) {
+			if(channels[curr_channel].channel_ready >= READY) {
+				if (first_unicast_port == -1) {
+					first_unicast_port = unicast_master_port;
+				} else if (unicast_master_port != first_unicast_port) {
+					all_same_unicast_port = 0;
+					break;
+				}
+			}
+		}
+	}
+	
 	for (curr_channel = 0; curr_channel < number_of_channels; curr_channel++)
 	{
 		if(channels[curr_channel].channel_ready<READY)
 			continue;
-		log_message( log_module,  MSG_INFO, "Channel number : %3d,   service id %d  name : \"%s\"",
-				curr_channel,
-				channels[curr_channel].service_id,
-				channels[curr_channel].name);
+		// Show card information in the channel line if available
+		if (card_id >= 0) {
+			log_message( log_module,  MSG_INFO, "card-%d Channel Number: %3d,   service id %d  name : \"%s\"",
+					card_id,
+					curr_channel,
+					channels[curr_channel].service_id,
+					channels[curr_channel].name);
+		} else {
+			log_message( log_module,  MSG_INFO, "Channel number : %3d,   service id %d  name : \"%s\"",
+					curr_channel,
+					channels[curr_channel].service_id,
+					channels[curr_channel].name);
+		}
 		if(multicast_ipv4)
 		{
 			log_message( log_module,  MSG_INFO, "\tMulticast4 ip : %s:%d\n", channels[curr_channel].ip4Out, channels[curr_channel].portOut);
@@ -460,7 +493,10 @@ void log_streamed_channels(char *log_module,int number_of_channels, mumudvb_chan
 		}
 		if(unicast)
 		{
-			log_message( log_module,  MSG_INFO, "\tUnicast : Channel accessible via the master connection, %s:%d\n",unicastipOut, unicast_master_port);
+			// Only show unicast info if not all channels use the same port, or if this is the first channel
+			if (!all_same_unicast_port || curr_channel == 0) {
+				log_message( log_module,  MSG_INFO, "\tHTTP Server: Channel accessible via %s:%d\n",unicastipOut, unicast_master_port);
+			}
 			if(channels[curr_channel].unicast_port)
 				log_message( log_module,  MSG_INFO, "\tUnicast : Channel accessible directly via %s:%d\n",unicastipOut, channels[curr_channel].unicast_port);
 		}
@@ -978,17 +1014,39 @@ void print_info ()
 #else
 			"Built without SCAM support.\n"
 #endif
+#ifdef ENABLE_ARIB_SUPPORT
+			"Built with ARIB charset support.\n"
+#else
+			"Built without ARIB charset support.\n"
+#endif
 #ifdef ATSC
 			"Built with ATSC support.\n"
 #ifdef HAVE_LIBUCSI
 			"Built with ATSC long channel names support.\n"
 #endif
 #endif
+#ifndef DISABLE_DVB_API
+			"Built with Linux DVB-API support.\n"
 #if DVB_API_VERSION >= 5
 			"Built with support for DVB API Version %d.%d.\n"
 #ifdef DVBT2
 			"Built with support for DVB-T2.\n"
 #endif
+#ifdef ISDBT
+			"Built with support for ISDB-T.\n"
+#endif
+#ifdef STREAM_ID
+			"Built with support for DVB-S2 stream ID.\n"
+#endif
+#endif
+#else
+			"Built without Linux DVB-API support.\n"
+#endif
+#ifdef ANDROID
+			"Built with Android compatibility.\n"
+#endif
+#ifdef TUNE_OLD
+			"Built with old tuning code.\n"
 #endif
 			"---------\n"
 			"Originally based on dvbstream 0.6 by (C) Dave Chapman 2001-2004\n"
@@ -1025,11 +1083,12 @@ void usage (char *name)
 			"-j --japan   : Enable processing ARIB encoding in SI/EPG data\n"
 #endif
 			"-h, --help   : Help\n"
+			"-V, --version: Show version and build information\n"
 			"\n", name);
 	print_info ();
 }
 
-void show_traffic( char *log_module, double now, int show_traffic_interval, mumu_chan_p_t *chan_p)
+void show_traffic( char *log_module, double now, int show_traffic_interval, mumu_chan_p_t *chan_p, int card_id)
 {
 	static long show_traffic_time=0;
 
@@ -1040,9 +1099,16 @@ void show_traffic( char *log_module, double now, int show_traffic_interval, mumu
 		show_traffic_time = (long)now;
 		for (int curr_channel = 0; curr_channel < chan_p->number_of_channels; curr_channel++)
 		{
-			log_message( log_module,  MSG_INFO, "Traffic :  %.2f kb/s \t  for channel \"%s\"\n",
-					chan_p->channels[curr_channel].traffic*8,
-					chan_p->channels[curr_channel].name);
+			if (card_id >= 0) {
+				log_message( log_module,  MSG_INFO, "card-%d Traffic: %.2f kb/s for channel \"%s\"\n",
+						card_id,
+						chan_p->channels[curr_channel].traffic*8,
+						chan_p->channels[curr_channel].name);
+			} else {
+				log_message( log_module,  MSG_INFO, "Traffic: %.2f kb/s for channel \"%s\"\n",
+						chan_p->channels[curr_channel].traffic*8,
+						chan_p->channels[curr_channel].name);
+			}
 		}
 	}
 }

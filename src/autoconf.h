@@ -153,8 +153,13 @@ void init_aconf_v(auto_p_t *aconf_p);
 int autoconf_init(auto_p_t *auto_p);
 void autoconf_freeing(auto_p_t *);
 int read_autoconfiguration_configuration(auto_p_t *auto_p, char *substring);
-int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds_t *fds, mumu_chan_p_t *chan_p, tune_p_t *tune_p, multi_p_t *multi_p,  unicast_parameters_t *unicast_vars, int server_id, void *scam_vars);
+int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds_t *fds, mumu_chan_p_t *chan_p, tune_p_t *tune_p, multi_p_t *multi_p,  unicast_parameters_t *unicast_vars, int server_id, void *scam_vars, int card_id);
 int autoconf_poll(long now, auto_p_t *auto_p, mumu_chan_p_t *chan_p, tune_p_t *tune_p, multi_p_t *multi_p, fds_t *fds, unicast_parameters_t *unicast_vars, int server_id, void *scam_vars);
 void autoconf_pmt_follow( unsigned char *ts_packet, fds_t *fds, mumudvb_channel_t *actual_channel, char *card_base_path, int tuner, mumu_chan_p_t *chan_p );
+
+// Autoconf update functions
+void autoconf_update_chan_name(mumu_chan_p_t *chan_p, auto_p_t *auto_p);
+void autoconf_update_chan_status(auto_p_t *auto_p, mumu_chan_p_t *chan_p, int card_id);
+
 
 #endif

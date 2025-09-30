@@ -142,22 +142,7 @@ typedef struct unicast_client_t{
 }unicast_client_t;
 
 
-/** @brief The information on the unicast file descriptors/sockets
- * There is three kind of descriptors :
-  * The master connection : this connection will interpret the HTTP path asked, to give the channel, the channel list or debugging information
-  * Client connections : This is the connections for connected clients
-  * Channel listening connections : When a client connect to one of these sockets, the associated channel will be given directly without interpreting the PATH
- *
- * The numbering of this socket information is the same as the file descriptors numbering
- */
-typedef struct unicast_fd_info_t{
-  /**The fd/socket type*/
-  int type;
-  /** The channel if it's a channel socket*/
-  int channel;
-  /** The client if it's a client socket*/
-  unicast_client_t *client;
-}unicast_fd_info_t;
+// File descriptor information is now determined dynamically - no need for fd_info array
 
 
 /** @brief The parameters for unicast
@@ -189,8 +174,7 @@ typedef struct unicast_parameters_t{
   int socket_sendbuf_size;
   /** Debug : do we flush the queue when we get eagain errors ? */
   int flush_on_eagain;
-  /** The information on the file descriptors : ie the type of FD, the client associated if it's a client fd, the channel if it's a channel fd */
-  unicast_fd_info_t *fd_info;
+  // File descriptor information is now determined dynamically - no need for fd_info array
   /**File descriptors for pooling*/
   struct pollfd *pfds;	//unicast http clients
   int pfdsnum;
@@ -202,6 +186,20 @@ typedef struct unicast_parameters_t{
   int hls_rotate_iframe;
   char *hls_storage_dir;
   char *hls_playlist_name;
+  /** TCP optimization: enable keepalive */
+  int tcp_keepalive;
+  /** TCP optimization: keepalive idle time (seconds) */
+  int tcp_keepalive_idle;
+  /** TCP optimization: keepalive interval (seconds) */
+  int tcp_keepalive_interval;
+  /** TCP optimization: keepalive probe count */
+  int tcp_keepalive_count;
+  /** TCP optimization: enable window scaling */
+  int tcp_window_scaling;
+  /** TCP optimization: enable selective ACKs */
+  int tcp_selective_acks;
+  /** Scan results page refresh delay in seconds */
+  int scan_results_refresh_delay;
 }unicast_parameters_t;
 
 
@@ -244,6 +242,10 @@ void unicast_data_send(mumudvb_channel_t *actual_channel,  unicast_parameters_t 
 
 void process_channel_name(char *str);
 void init_unicast_v(unicast_parameters_t *unicast_vars);
+
+int unicast_send_card_utilization_status(int Socket);
+int unicast_send_tuner_scan_results(int Socket);
+int unicast_generate_cards_list_html(struct unicast_reply* reply, int requested_card_id);
 
 
 #endif

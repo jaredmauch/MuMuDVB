@@ -113,13 +113,13 @@ void log_message( char* log_module, int , const char *, ... ) __attribute__ ((fo
 void log_message(char *log_module, int, const char *, ...);
 #endif
 void gen_file_streamed_channels (char *nom_fich_chaines_diff, char *nom_fich_chaines_non_diff, int nb_flux, mumudvb_channel_t *channels);
-void log_streamed_channels(char *log_module,int number_of_channels, mumudvb_channel_t *channels, int multicast_ipv4, int multicast_ipv6, int unicast, int unicast_master_port, char *unicastipOut);
+void log_streamed_channels(char *log_module,int number_of_channels, mumudvb_channel_t *channels, int multicast_ipv4, int multicast_ipv6, int unicast, int unicast_master_port, char *unicastipOut, int card_id);
 char *ca_sys_id_to_str(int id);
 void display_service_type(int type, int loglevel,char *log_module);
 char *pid_type_to_str(int type);
 char *service_type_to_str(int type);
 char *simple_service_type_to_str(int type);
-void show_traffic(char *log_module, double now, int show_traffic_interval, mumu_chan_p_t *chan_p);
+void show_traffic(char *log_module, double now, int show_traffic_interval, mumu_chan_p_t *chan_p, int card_id);
 char *liben50221_error_to_str(int error);
 char *liben50221_error_to_str_descr(int error);
 void log_pids(char *log_module, mumudvb_channel_t *channel, int curr_channel);

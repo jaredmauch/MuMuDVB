@@ -58,6 +58,7 @@
 #include "mumudvb.h"
 #include "errors.h"
 #include "log.h"
+#include "bitrate_monitor.h"
 
 
 
@@ -70,7 +71,7 @@ static char *log_module="Unicast : ";
  * @param SocketAddr The socket address
  * @param Socket The socket number
  */
-unicast_client_t *unicast_add_client(unicast_parameters_t *unicast_vars, int Socket)
+unicast_client_t *unicast_add_client(unicast_parameters_t *unicast_vars, int Socket, const char *client_ip)
 {
 
 	unicast_client_t *client;
@@ -158,6 +159,20 @@ unicast_client_t *unicast_add_client(unicast_parameters_t *unicast_vars, int Soc
 	client->queue.last=NULL;
 
 	unicast_vars->client_number++;
+	
+	// Register client with bitrate monitor if available
+	bitrate_monitor_t *bitrate_monitor = get_global_bitrate_monitor();
+	if (bitrate_monitor) {
+		// Find associated stream (we'll need to determine this based on the channel)
+		// For now, we'll register with a default stream ID of 0
+		int client_sync_id = register_client_for_sync(bitrate_monitor, Socket, Socket, client_ip, 0);
+		if (client_sync_id >= 0) {
+			// Store the client sync ID in the client structure
+			// We'll need to add this field to the unicast_client_t structure
+			log_message(log_module, MSG_DEBUG, "Registered client %d with bitrate monitor (sync_id=%d)", 
+				Socket, client_sync_id);
+		}
+	}
 
 	return client;
 }
@@ -220,13 +235,29 @@ int unicast_del_client(unicast_parameters_t *unicast_vars, unicast_client_t *cli
 	}
 
 
+	// Store client socket before freeing
+	int client_socket = client->Socket;
+	
+	// Unregister client from bitrate monitor if available (before freeing)
+	bitrate_monitor_t *bitrate_monitor = get_global_bitrate_monitor();
+	if (bitrate_monitor) {
+		// Find client sync ID by socket
+		for (int i = 0; i < bitrate_monitor->num_clients; i++) {
+			if (bitrate_monitor->clients[i].socket_fd == client_socket) {
+				unregister_client_from_sync(bitrate_monitor, i);
+				log_message(log_module, MSG_DEBUG, "Unregistered client %d from bitrate monitor", 
+					client_socket);
+				break;
+			}
+		}
+	}
+
 	if(client->buffer)
 		free(client->buffer);
 	unicast_queue_clear(&client->queue);
 	free(client);
 
 	unicast_vars->client_number--;
-
 
 	return 0;
 }

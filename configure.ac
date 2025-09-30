@@ -1,8 +1,8 @@
 #                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
-AC_PREREQ([2.61])
-AC_INIT([MuMuDVB], [m4_join([_], [2.1.0], m4_chomp_all(m4_esyscmd([git rev-parse HEAD])))], [mumudvb@braice.net])
+AC_PREREQ([2.72])
+AC_INIT([MuMuDVB],[m4_join([_], [2.1.0], m4_chomp_all(m4_esyscmd([git rev-parse HEAD])))],[mumudvb@braice.net])
 AC_CONFIG_SRCDIR([src/mumudvb.c])
 AC_CONFIG_MACRO_DIR([m4])
 AM_INIT_AUTOMAKE
@@ -10,14 +10,23 @@ AC_CONFIG_HEADERS([src/config.h])
 
 # Checks for programs.
 AC_PROG_CC
-AC_PROG_CC_STDC
 AC_PROG_INSTALL
+
+# Force use of non-versioned autotools commands
+AC_PATH_PROG([ACLOCAL], [aclocal], [aclocal])
+AC_PATH_PROG([AUTOCONF], [autoconf], [autoconf])
+AC_PATH_PROG([AUTOMAKE], [automake], [automake])
 AC_PROG_MAKE_SET
+
+# Use modern MKDIR_P macro
+AC_PROG_MKDIR_P
 
 dnl
 dnl Iconv stuff
 dnl
-AM_GNU_GETTEXT_VERSION([0.15])
+# Disable gettext/translations - not needed for this project
+# AM_GNU_GETTEXT_VERSION([0.20])
+# AM_GNU_GETTEXT([external])
 AM_ICONV
 
 dnl
@@ -169,9 +178,14 @@ AC_TYPE_UINT8_T
 # Checks for library functions.
 AC_CHECK_FUNCS([alarm gettimeofday inet_ntoa memset socket strerror strstr])
 
+# Define substitution variables for manpage
+AC_SUBST([DATE], [`date +"%B %d %Y"`])
+AC_SUBST([PACKAGE_URL], ["http://mumudvb.net/"])
+
 AC_CONFIG_FILES([Makefile
                  doc/Makefile
-                 src/Makefile])
+                 src/Makefile
+                 doc/mumudvb.8])
 AC_OUTPUT
 
 #put resume at the end

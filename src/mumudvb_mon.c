@@ -64,6 +64,8 @@
 #include "rtp.h"
 #include "log.h"
 #include "hls.h"
+#include "unicast_queue.h"
+#include "event_timing.h"
 
 #if defined __UCLIBC__ || defined ANDROID || defined(_WIN32)
 #define program_invocation_short_name "mumudvb"
@@ -73,9 +75,7 @@ extern char *program_invocation_short_name;
 
 static char *log_module="Main: ";
 
-extern long now;
-extern long real_start_time;
-extern int received_signal;
+// Global timing and signal variables are now accessed via thread-safe functions
 //logging
 extern log_params_t log_params;
 extern int dont_send_scrambled;
@@ -89,7 +89,7 @@ extern int tuning_no_diff;
 
 void parse_cmd_line(int argc, char **argv,char *(*conf_filename),tune_p_t *tune_p,stats_infos_t *stats_infos,int *server_id, int *no_daemon,char **dump_filename, int *listingcards)
 {
-	const char short_options[] = "c:sdthjvql";
+	const char short_options[] = "c:sdthjvVql";
 	const struct option long_options[] = {
 			{"config", required_argument, NULL, 'c'},
 			{"signal", no_argument, NULL, 's'},
@@ -100,6 +100,7 @@ void parse_cmd_line(int argc, char **argv,char *(*conf_filename),tune_p_t *tune_
 #endif
 			{"debug", no_argument, NULL, 'd'},
 			{"help", no_argument, NULL, 'h'},
+			{"version", no_argument, NULL, 'V'},
 			{"list-cards", no_argument, NULL, 'l'},
 			{"card", required_argument, NULL, 'a'},
 			{"dumpfile", required_argument, NULL, 'z'},
@@ -160,6 +161,10 @@ void parse_cmd_line(int argc, char **argv,char *(*conf_filename),tune_p_t *tune_
 		case 'h':
 			usage (program_invocation_short_name);
 			exit(ERROR_ARGS);
+			break;
+		case 'V':
+			print_info ();
+			exit(0);
 			break;
 		case 'l':
 			*listingcards=1;
@@ -232,6 +237,11 @@ int mumudvb_close(int no_daemon,
 					Interrupted);
 		else
 			log_message( log_module,  MSG_INFO, "Closing cleanly. Error %d\n",Interrupted>>8);
+		
+		// If interrupted by signal, be more aggressive about shutdown
+		if(Interrupted < (1<<8)) {
+			log_message(log_module, MSG_INFO, "Interrupted by signal - using fast shutdown mode");
+		}
 	}
 #if !defined __UCLIBC__ && !defined ANDROID && !defined(_WIN32)
 	struct timespec ts;
@@ -241,9 +251,13 @@ int mumudvb_close(int no_daemon,
 	{
 		log_message(log_module,MSG_DEBUG,"Signal/power Thread closing\n");
 		*strengththreadshutdown=1;
+		
+		// If interrupted, use shorter timeout for faster shutdown
+		int timeout_sec = Interrupted ? 1 : 5;
+		
 #if !defined __UCLIBC__ && !defined ANDROID && !defined(_WIN32)
 		clock_gettime(CLOCK_REALTIME, &ts);
-		ts.tv_sec += 5;
+		ts.tv_sec += timeout_sec;
 		iRet=pthread_timedjoin_np(*signalpowerthread, NULL, &ts);
 #else
 		iRet=pthread_join(*signalpowerthread, NULL);
@@ -264,9 +278,13 @@ int mumudvb_close(int no_daemon,
 	{
 		log_message(log_module,MSG_DEBUG,"Monitor Thread closing\n");
 		monitor_thread_params->threadshutdown=1;
+		
+		// If interrupted, use shorter timeout for faster shutdown
+		int timeout_sec = Interrupted ? 1 : 5;
+		
 #if !defined __UCLIBC__ && !defined ANDROID && !defined(_WIN32)
 		clock_gettime(CLOCK_REALTIME, &ts);
-		ts.tv_sec += 5;
+		ts.tv_sec += timeout_sec;
 		iRet=pthread_timedjoin_np(*monitorthread, NULL, &ts);
 #else
 		iRet=pthread_join(*monitorthread, NULL);
@@ -359,12 +377,16 @@ int mumudvb_close(int no_daemon,
 		free(monitor_thread_params->sap_p->sap_messages6);
 
 	//Pat rewrite freeing
-	if(rewrite_vars->full_pat)
+	if(rewrite_vars->full_pat) {
+		pthread_mutex_destroy(&rewrite_vars->full_pat->packetmutex);
 		free(rewrite_vars->full_pat);
+	}
 
 	//SDT rewrite freeing
-	if(rewrite_vars->full_sdt)
+	if(rewrite_vars->full_sdt) {
+		pthread_mutex_destroy(&rewrite_vars->full_sdt->packetmutex);
 		free(rewrite_vars->full_sdt);
+	}
 
 	//EIT rewrite freeing
 	if (rewrite_vars->eit_packets)
@@ -388,8 +410,10 @@ int mumudvb_close(int no_daemon,
 		    }
 		}
 	}
-	if (rewrite_vars->full_eit)
+	if (rewrite_vars->full_eit) {
+		pthread_mutex_destroy(&rewrite_vars->full_eit->packetmutex);
 		free(rewrite_vars->full_eit);
+	}
 
 	if (strlen(filename_channels_streamed) && (write_streamed_channels)&&remove (filename_channels_streamed))
 	{
@@ -435,10 +459,7 @@ int mumudvb_close(int no_daemon,
 		free(fds->pfds);
 		fds->pfds=NULL;
 	}
-	if(unicast_vars->fd_info) {
-		free(unicast_vars->fd_info);
-		unicast_vars->fd_info=NULL;
-	}
+	// No need to free fd_info array - we determine types dynamically
 	if(unicast_vars->pfds) {
 		free(unicast_vars->pfds);
 		unicast_vars->pfds=NULL;
@@ -461,6 +482,17 @@ int mumudvb_close(int no_daemon,
 
 	// Show in log that we are stopping
 	log_message( log_module,  MSG_INFO,"========== MuMuDVB version %s is stopping with ExitCode %d ==========",VERSION,ExitCode);
+	
+	// If interrupted by signal, skip some cleanup and exit faster
+	if(Interrupted < (1<<8)) {
+		log_message(log_module, MSG_INFO, "Fast shutdown due to signal - skipping some cleanup");
+		// Still do basic cleanup but skip time-consuming operations
+		cleanup_global_bitrate_monitor();
+		return ExitCode;
+	}
+
+	// Cleanup bitrate monitor
+	cleanup_global_bitrate_monitor();
 
 	// Freeing log ressources
 	if(log_params.log_file)
@@ -509,35 +541,36 @@ void *monitor_func(void* arg)
 	struct scam_parameters_t *scam_vars;
 	scam_vars=(struct scam_parameters_t *) params->scam_vars_v;
 #endif
-	while(!params->threadshutdown)
+	while(!params->threadshutdown && !get_interrupted())
 	{
 		gettimeofday (&tv, (struct timezone *) NULL);
 		monitor_now =  tv.tv_sec + tv.tv_usec/1000000 -monitor_start;
-		now = tv.tv_sec - real_start_time;
+		set_now(tv.tv_sec - get_real_start_time());
 
 		/*******************************************/
 		/* We deal with the received signals       */
 		/*******************************************/
 #ifndef DISABLE_DVB_API
-		if (received_signal == SIGUSR1) //Display signal strength
+		int signal = get_received_signal();
+		if (signal == SIGUSR1) //Display signal strength
 		{
 			params->tune_p->display_strenght = params->tune_p->display_strenght ? 0 : 1;
-			received_signal = 0;
+			clear_received_signal();
 		}
-		else if (received_signal == SIGUSR2) //Display traffic
+		else if (signal == SIGUSR2) //Display traffic
 		{
 			params->stats_infos->show_traffic = params->stats_infos->show_traffic ? 0 : 1;
 			if(params->stats_infos->show_traffic)
 				log_message( log_module, MSG_INFO,"The traffic will be shown every %d seconds\n",params->stats_infos->show_traffic_interval);
 			else
 				log_message( log_module, MSG_INFO,"The traffic will not be shown anymore\n");
-			received_signal = 0;
+			clear_received_signal();
 		}
-		else if (received_signal == SIGHUP) //Sync logs
+		else if (signal == SIGHUP) //Sync logs
 		{
 			log_message( log_module, MSG_DEBUG,"Sync logs\n");
 			sync_logs();
-			received_signal = 0;
+			clear_received_signal();
 		}
 #endif
 
@@ -579,7 +612,7 @@ void *monitor_func(void* arg)
 		/*******************************************/
 		if(params->stats_infos->show_traffic)
 		{
-			show_traffic(log_module,monitor_now, params->stats_infos->show_traffic_interval, params->chan_p);
+			show_traffic(log_module,monitor_now, params->stats_infos->show_traffic_interval, params->chan_p, params->tune_p->card);
 		}
 
 
@@ -776,12 +809,24 @@ void *monitor_func(void* arg)
 		/* If we don't stream data for             */
 		/* a too long time, we exit                */
 		/*******************************************/
-		if((timeout_no_diff)&& (time_no_diff&&((monitor_now-time_no_diff)>timeout_no_diff)))
+		// Skip timeout exit in unified mode - unified system handles card failures gracefully
+		extern unified_channel_system_t unified_system;
+		int is_unified_mode = (unified_system.num_cards > 0);
+		
+		if((timeout_no_diff)&& (time_no_diff&&((monitor_now-time_no_diff)>timeout_no_diff)) && !is_unified_mode)
 		{
 			log_message( log_module,  MSG_ERROR,
 					"No data from card %d in %ds, exiting.\n",
 					params->tune_p->card, timeout_no_diff);
 			set_interrupted(ERROR_NO_DIFF<<8); //the <<8 is to make difference between signals and errors
+		}
+		else if (is_unified_mode && (timeout_no_diff) && (time_no_diff && ((monitor_now-time_no_diff)>timeout_no_diff)))
+		{
+			log_message( log_module,  MSG_WARN,
+					"No data from card %d in %ds, but continuing in unified mode (unified system handles card failures).\n",
+					params->tune_p->card, timeout_no_diff);
+			// Reset the timeout counter to prevent repeated warnings
+			time_no_diff = 0;
 		}
 
 		/*******************************************/
@@ -854,8 +899,11 @@ void *monitor_func(void* arg)
 
 		pthread_mutex_unlock(&params->chan_p->lock);
 
+		// Check for cards that can be released (completed scanning with no clients)
+		check_and_release_idle_cards();
+
 		for(i=0;i<params->wait_time && !params->threadshutdown;i++)
-			usleep(100000);
+			EVENT_MSLEEP(100);
 	}
 
 	log_message(log_module,MSG_DEBUG, "Monitor thread stopping, it lasted %f seconds\n", monitor_now);

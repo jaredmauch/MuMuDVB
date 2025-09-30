@@ -35,12 +35,21 @@
 #include "network.h"  //for the sockaddr
 #include "ts.h"
 #include "config.h"
+#include "card_frequency_result.h"
+#include "event_timing.h"
 #include <pthread.h>
 #ifndef _WIN32
 #include <net/if.h>
 #else
 #include "win32.h"
 #endif
+
+/* Forward declarations for unified channel system */
+typedef struct tune_p_t tune_p_t;
+typedef struct unicast_parameters_t unicast_parameters_t;
+typedef struct auto_p_t auto_p_t;
+typedef struct sap_p_t sap_p_t;
+typedef struct stats_infos_t stats_infos_t;
 
 #define MAX_FILENAME_LEN 256
 
@@ -73,7 +82,7 @@
 #define MAX_PIDS     128
 
 /**the maximum channel number*/
-#define MAX_CHANNELS		128
+#define MAX_CHANNELS		1024
 
 /**the maximum number of CA systems*/
 #define MAX_CA_SYSTEMS		32
@@ -93,6 +102,24 @@
 
 #define ALARM_TIME_TIMEOUT 60
 #define ALARM_TIME_TIMEOUT_NO_DIFF 600
+
+/** Timing constants optimized for fast signal response */
+#define TIMING_POLL_INTERVAL_MS 50         // 50ms polling interval (was 100ms)
+#define TIMING_FREQUENCY_TEST_DELAY_MS 6000 // 6000ms (6 seconds) between frequency tests to match initial scan timing
+#define TIMING_SIGNAL_LOCK_TIMEOUT_MS 6000 // 6 seconds for signal lock
+#define TIMING_BACKGROUND_SCANNER_DELAY_SEC 3600 // 1 hour background scanner delay (was 2 seconds - too fast)
+#define TIMING_CARD_TEST_DELAY_MS 6000 // 6000ms delay between testing different cards on same frequency (matches signal lock timing)
+#define TIMING_CHANNEL_ACQUISITION_DELAY_MS 6000 // 6000ms delay for channel acquisition after signal lock
+#define TIMING_THREAD_CREATION_DELAY_MS 25 // 25ms between thread creation (was 50ms)
+#define TIMING_MAIN_LOOP_SLEEP_MS 1        // 1ms main loop sleep (unchanged)
+
+/** Fast signal response constants */
+#define TIMING_CRITICAL_THREAD_MS 10       // 10ms for critical threads (main loop, signal handlers)
+#define TIMING_NORMAL_THREAD_MS 50         // 50ms for normal threads (card workers, DVB)
+#define TIMING_BACKGROUND_THREAD_MS 100    // 100ms for background threads (scanner, monitor)
+
+/** Helper macro to convert milliseconds to microseconds for usleep */
+#define MS_TO_US(ms) ((ms) * 1000)
 
 /** MTU
     1500 bytes - ip header (12bytes) - TCP header (biggest between TCP and udp) 24  : 7 mpeg2-ts packet per ethernet frame
@@ -129,7 +156,7 @@ We cannot discover easily the MTU with unconnected UDP
 /**RTP header length*/
 #define RTP_HEADER_LEN 12
 
-#define SAP_GROUP_LENGTH 20
+#define SAP_GROUP_LENGTH 64
 
 #include <stdbool.h>
 
@@ -588,8 +615,97 @@ typedef struct monitor_parameters_t{
 	char *filename_channels_streamed;
 }monitor_parameters_t;
 
+/** Unified channel system for multiple DVB cards */
+typedef struct unified_card_t {
+	/** The DVB card number (maps to /dev/dvb/adapterN/) */
+	int card_id;
+	/** The tuning parameters for this card */
+	tune_p_t *tune_params;
+	/** The file descriptors for this card */
+	fds_t *fds;
+	/** Is this card currently in use? */
+	int in_use;
+	/** Current frequency being tuned */
+	double current_freq;
+	/** List of frequencies this card can access */
+	double *available_frequencies;
+	/** Number of available frequencies */
+	int num_frequencies;
+	/** Thread for this card */
+	pthread_t card_thread;
+	/** Channel parameters for this card */
+	mumu_chan_p_t *chan_p;
+	/** Monitor parameters for this card */
+	monitor_parameters_t *monitor_params;
+	/** Autoconfiguration parameters for this card */
+	struct auto_p_t *auto_p;
+	/** Is autoconf initialized for this card? */
+	int autoconf_initialized;
+} unified_card_t;
+
+/** Enhanced channel structure that includes frequency and card information */
+typedef struct {
+    /** Base channel information */
+    mumudvb_channel_t base_channel;
+    /** Frequency this channel was discovered on (in Hz) */
+    double frequency;
+    /** Card ID that discovered this channel */
+    int card_id;
+    /** Whether this channel is currently active (tuned and streaming) */
+    int is_active;
+    /** Number of clients currently using this channel */
+    int client_count;
+    /** When this channel was last accessed */
+    time_t last_accessed;
+    /** URI for accessing this channel via HTTP */
+    char channel_uri[256];
+    /** Whether this channel was discovered via parallel scanning */
+    int discovered_via_parallel;
+} enhanced_channel_t;
 
 
+/** Unified channel system parameters */
+typedef struct unified_channel_system_t {
+	/** Array of DVB cards */
+	unified_card_t *cards;
+	/** Number of cards */
+	int num_cards;
+	/** List of all frequencies to be served */
+	double *frequencies;
+	/** Number of frequencies */
+	int num_frequencies;
+	/** Frequency to card mapping */
+	int *freq_to_card;
+	/** Mutex for thread safety */
+	pthread_mutex_t lock;
+	/** Common unicast parameters */
+	unicast_parameters_t *unicast_vars;
+	/** Common multicast parameters */
+	multi_p_t *multi_p;
+	/** Common autoconfiguration parameters */
+	auto_p_t *auto_p;
+	/** Common scam parameters */
+	void *scam_vars;
+	/** Server ID */
+	int server_id;
+	/** Maximum number of parallel scan threads (0 = unlimited, 1 = single thread) */
+	int scan_limit;
+	/** New hierarchical channel storage system */
+	struct unified_channel_storage_v2_t *unified_storage_v2;
+} unified_channel_system_t;
+
+/** Structure to track discovered channels per frequency */
+typedef struct {
+    double frequency;
+    int card_id;
+    int channel_count;
+    char channel_names[128][64]; // Max 128 channels per frequency, 64 chars per name
+    int service_ids[128];
+    char channel_uris[128][256]; // URIs for each channel
+    int is_active; // 1 = currently tuned, 0 = available but not tuned
+    int client_count; // Number of clients using this frequency
+    time_t last_accessed; // Last time this frequency was accessed
+} frequency_channel_info_t;
 
 /** struct containing a string */
 typedef struct mumu_string_t{
@@ -610,6 +726,91 @@ extern bool japan_active;
 int mumu_string_append(mumu_string_t *string, const char *psz_format, ...);
 void mumu_free_string(mumu_string_t *string);
 
+/** Unified channel system functions */
+int read_unified_channel_configuration(unified_channel_system_t *unified_system, char *substring);
+int init_unified_channel_system(unified_channel_system_t *unified_system);
+int init_unified_channel_system_v2(unified_channel_system_t *unified_system);
+
+/** Enhanced channel utility functions */
+int convert_enhanced_to_base_channels(enhanced_channel_t *enhanced_channels, int num_enhanced,
+                                      mumudvb_channel_t **base_channels, int *num_base);
+
+int init_unified_channel_system(unified_channel_system_t *unified_system);
+void cleanup_unified_channel_system(unified_channel_system_t *unified_system);
+int detect_card_capabilities(unified_channel_system_t *unified_system);
+int assign_card_to_frequency(unified_channel_system_t *unified_system, double frequency);
+int build_channel_list_for_frequency(unified_card_t *card, double frequency, int fd_frontend);
+int get_available_card_for_frequency(unified_channel_system_t *unified_system, double frequency);
+void *unified_card_thread(void *arg);
+void *background_frequency_scanner(void *arg);
+int scan_remaining_frequencies(unified_channel_system_t *unified_system, fds_t *fds, 
+                               tune_p_t *tune_p, int first_frequency_index);
+int start_unified_channel_serving(unified_channel_system_t *unified_system, fds_t *fds, 
+                                  tune_p_t *tune_p, mumu_chan_p_t *chan_p, auto_p_t *auto_p,
+                                  unicast_parameters_t *unic_p, multi_p_t *multi_p, 
+                                  sap_p_t *sap_p, stats_infos_t *stats_infos, int server_id);
+
+/** Card usage tracking functions */
+void register_card_usage(int card_id, double frequency, const char *usage_type);
+void unregister_card_usage(int card_id, const char *usage_type);
+int is_card_in_use(int card_id);
+int is_card_used_by_main_system(int card_id);
+
+// New unified channel flow functions
+int unified_card_frequency_flow(unified_channel_system_t *unified_system);
+int find_best_card_for_frequency(double frequency);
+int assign_card_to_frequency_usage(int card_id, double frequency);
+
+// Parallel card manager functions
+int init_parallel_card_manager(unified_channel_system_t *unified_system);
+void cleanup_parallel_card_manager(void);
+int is_parallel_operation_active(void);
+
+// Card utilization tracking functions
+int generate_card_utilization_json(char *buffer, size_t buffer_size);
+void check_and_release_idle_cards(void);
+int start_parallel_card_scanning(void);
+int get_best_card_for_frequency(double frequency);
+int generate_card_frequency_matrix(const char *output_file);
+int get_card_scan_results(int card_id, void *results, int max_results);
+int get_parallel_scan_results_count(void);
+int set_parallel_scan_limit(int scan_limit);
+int get_parallel_scan_limit(void);
+
+// Unified card initialization functions
+int init_card_common(unified_card_t *card, int card_id, 
+                    unicast_parameters_t *unic_p, multi_p_t *multi_p, 
+                    auto_p_t *auto_p, void *scam_vars, int server_id, int is_unified);
+void cleanup_unified_card(unified_card_t *card);
+
+// Parallel card manager functions
+int get_parallel_scan_results(card_frequency_result_t *results, int max_results);
+
+// Main thread polling functions
+int main_thread_poll_with_timeout(fds_t *fds, unicast_parameters_t *unic_p, int timeout_ms);
+int main_thread_poll_available_fds(fds_t *fds, unicast_parameters_t *unic_p, int timeout_ms);
+
+// Global references for main thread polling (used by other modules)
+extern fds_t *global_main_fds;
+extern unicast_parameters_t *global_unicast_params;
+
+// Dynamic card assignment functions
+int request_card_for_frequency(double frequency, int priority);
+int get_available_parallel_card_for_frequency(double frequency, int force_assignment);
+int wait_for_initial_scan_complete(int timeout_ms);
+int is_initial_scan_complete(void);
+int is_card_available_for_testing(int card_id);
+int assign_parallel_card_to_frequency(int card_id, double frequency);
+int release_parallel_card_from_frequency(int card_id, double frequency);
+void *client_request_processor(void *arg);
+
+// Client routing functions
+int route_client_to_card_thread(double frequency, const char *channel_name);
+int release_card_from_client(int card_id);
+int release_card_from_frequency_usage(int card_id, double frequency);
+int bootstrap_card_for_frequency(int card_id, double frequency);
+int get_channel_uri_for_frequency(double frequency, int channel_index, char *uri_buffer, size_t buffer_size);
+int get_unified_channels_for_http(frequency_channel_info_t *channels_output, int max_channels);
 
 int mumudvb_poll(struct pollfd *, int , int );
 char *mumu_string_replace(char *source, int *length, int can_realloc, char *toreplace, char *replacement);
@@ -621,7 +822,8 @@ void send_func(mumudvb_channel_t *channel, uint64_t now_time, struct unicast_par
 int mumu_init_chan(mumudvb_channel_t *chan);
 void chan_update_CAM(mumu_chan_p_t *chan_p, struct auto_p_t *auto_p,  void *scam_vars_v);
 void update_chan_net(mumu_chan_p_t *chan_p, struct auto_p_t *auto_p, multi_p_t *multi_p, struct unicast_parameters_t *unicast_vars, int server_id, int card, int tuner);
-void update_chan_filters(mumu_chan_p_t *chan_p, char *card_base_path, int tuner, fds_t *fds);
+void update_chan_filters(mumu_chan_p_t *chan_p, char *card_base_path, int tuner, fds_t *fds, int card_id);
+void get_status_string(unsigned int festatus, char *status_str, int max_len);
 long int mumu_timing(void);
 
 /** Sets the interrupted flag if value != 0 and it is not already set.
@@ -630,5 +832,19 @@ int set_interrupted(int value);
 
 /** Gets the interrupted flag; 0 if we have not been interrupted. */
 int get_interrupted(void);
+
+/** Thread-safe signal variable access functions */
+int get_received_signal(void);
+void set_received_signal(int signal);
+void clear_received_signal(void);
+
+/** Thread-safe timing variable access functions */
+long get_now(void);
+void set_now(long new_now);
+long get_real_start_time(void);
+void set_real_start_time(long new_start_time);
+
+/** Global unified channel system instance */
+extern unified_channel_system_t unified_system;
 
 #endif

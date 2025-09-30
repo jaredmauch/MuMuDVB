@@ -82,7 +82,7 @@ void autoconf_pat_need_update(auto_p_t *auto_p, unsigned char *buf)
  *
  * @param auto_p The autoconfiguration structure, containing all we need
  */
-int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
+int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 {
 	mumudvb_ts_packet_t *pat_mumu;
 	unsigned char *buf=NULL;
@@ -113,9 +113,9 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
 		auto_p->pat_version=pat->version_number;
 		if(auto_p->pat_version!=-1)
 		{
-			log_message( log_module, MSG_INFO,"The PAT version changed, channels have changed");
+			log_message( log_module, MSG_INFO,"Card %d The PAT version changed, channels have changed", card_id);
 		}
-		log_message( log_module, MSG_INFO,"New PAT we force SDT update after all sections seen");
+		log_message( log_module, MSG_INFO,"Card %d New PAT we force SDT update after all sections seen", card_id);
 		//We mark previously existing autodetected channels for cleanup after all PAT parsing
 		//this flag will be set to READY if we see the channel again in this new PAT, otherwise it means the channel went down
 		//See the end of this function for more details
@@ -200,8 +200,8 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
 			else
 			{
 				//Channel still here, we force PMT update
-				log_message( log_module, MSG_WARN,"Channel %d SID %d Force PMT update",
-						i,
+				log_message( log_module, MSG_WARN,"Card %d Channel %d SID %d Force PMT update",
+						card_id, i,
 						chan_p->channels[i].service_id);
 				chan_p->channels[i].pmt_version=-1;
 			}
@@ -304,6 +304,7 @@ int autoconf_pat_update_chan(pat_prog_t  *prog,int pat_version,mumu_chan_p_t *ch
 		chan_p->channels[i].pid_i.pids[pid_i]=chan_p->channels[i].pid_i.pmt_pid;
 		chan_p->channels[i].pid_i.pids_type[pid_i]=PID_PMT;
 		snprintf(chan_p->channels[i].pid_i.pids_language[pid_i],4,"%s","---");
+		chan_p->channels[i].pid_i.pids_language[pid_i][3] = '\0';
 		if(chan_p->channels[i].pmt_packet==NULL)
 		{
 			chan_p->channels[i].pmt_packet=malloc(sizeof(mumudvb_ts_packet_t));

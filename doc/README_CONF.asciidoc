@@ -81,7 +81,7 @@ In the following list, only the parameter `freq` is mandatory
 |freq | transponder's frequency (in MHz for satellite). For cable and terrestrial you can use Hz,kHz or MHz | | Mandatory unless other freq is specified
 |modulation | The kind of modulation used (can be : QPSK QAM16 QAM32 QAM64 QAM128 QAM256 QAMAUTO VSB8 VSB16 8PSK 16APSK 32APSK DQPSK)  | ATSC: VSB_8, cable/terrestrial: QAM_AUTO, satellite: QPSK | Optional most of the times
 |delivery_system | the delivery system used (can be DVBT DVBT2 DVBS DVBS2 DVBC_ANNEX_AC DVBC_ANNEX_B ATSC ISDBT) | Undefined | Set it if you want to use the new tuning API (DVB API 5/S2API). Mandatory for DVB-S2 and DVB-T2
-|card | The DVB/ATSC card number | 0 | only limited by your OS
+|card | The DVB/ATSC card number | 0 | 0-255, auto | Use 'auto' to automatically detect and use the first available card. Can be overridden by command line option.
 |tuner | The tuner number | 0 | If you have a card with multiple tuners (ie there are several frontend* in /dev/dvb/adapter%card)
 |card_dev_path | The path of the DVB card devices. Use it if you have a personalised path like /dev/dvb/astra%card | /dev/dvb/adapter%card |  The template %card can be used
 |tuning_timeout |tuning timeout in seconds. | 300 | 0 = no timeout
@@ -225,17 +225,54 @@ Packets sending parameters
 |rtp_header | Send the stream with the rtp headers (except for HTTP unicast) | 0 | 0 or 1 | 
 |==================================================================================================================
 
-Logs parameters
-~~~~~~~~~~~~~~~
+Logging parameters
+~~~~~~~~~~~~~~~~~~
 
-[width="80%",cols="2,4,4,2,4",options="header"]
+[width="80%",cols="2,6,1,2,5",options="header"]
 |==================================================================================================================
 |Parameter name |Description | Default value | Possible values | Comments
-|log_header | specify the logging header | %priority:  %module  | | The implemented templates are %priority %module %timeepoch %date %pid
-|log_flush_interval | LogFile flushing interval (in seconds) | -1 : no periodic flushing  | |  
-|log_type | Where the log information will go | If neither this option and logfile are specified the log destination will be syslog if MuMuDVB run as a deamon, console otherwise  | syslog, console | The first time you specify a logging way, it replaces the default one. Then, each time you sepcify a logging channel, it is added to the previous
-|log_file | The file in which the logs will be written to | no file log  |  | The following templates are allowed %card %tuner %server 
+|log_type | Log output destination | auto | console, syslog | console = stdout/stderr, syslog = system log. Can specify multiple destinations.
+|log_file | Log file path | none | path | Write logs to file. Supports templates: %card, %tuner, %server. Creates directory if needed.
+|log_header | Custom log message format | %priority: %module | string | Templates: %priority, %module, %timeepoch, %date, %pid. Example: "[%date] %priority %module:"
+|log_flush_interval | Periodic log file flush interval | -1 (disabled) | -1, 0.1-3600 | Flush log file every N seconds. -1 = no periodic flushing, 0 = flush every message.
+|show_traffic_interval | Traffic statistics display interval | 10 | 1-3600 | Show bandwidth usage every N seconds. 0 = disable traffic display.
+|compute_traffic_interval | Traffic calculation interval | 1 | 1-3600 | Calculate bandwidth statistics every N seconds.
+|up_threshold | Upload bandwidth threshold (bytes/sec) | 0 | 0-999999999 | Log warning when upload exceeds this rate.
+|down_threshold | Download bandwidth threshold (bytes/sec) | 0 | 0-999999999 | Log warning when download exceeds this rate.
+|debug_updown | Enable bandwidth threshold debugging | 0 | 0 or 1 | Show detailed bandwidth monitoring information.
 |==================================================================================================================
+
+**Logging Configuration Examples:**
+
+Basic console logging::
+----
+log_type=console
+log_header="[%date] %priority %module:"
+----
+
+File logging with rotation::
+----
+log_type=console
+log_file=/var/log/mumudvb/mumudvb_%card.log
+log_flush_interval=5
+----
+
+System logging::
+----
+log_type=syslog
+log_header="MuMuDVB[%pid]: %priority %module"
+----
+
+Advanced logging with traffic monitoring::
+----
+log_type=console
+log_file=/var/log/mumudvb.log
+log_flush_interval=10
+show_traffic_interval=30
+up_threshold=10000000
+down_threshold=5000000
+debug_updown=1
+----
 
 Multicast parameters
 ~~~~~~~~~~~~~~~~~~~~
@@ -243,7 +280,7 @@ Multicast parameters
 [width="80%",cols="2,8,1,2,3",options="header"]
 |==================================================================================================================
 |Parameter name |Description | Default value | Possible values | Comments
-|multicast_ipv4 |Do we activate IPv4 multicast | 1 | 0 or 1 | Put this option to 0 to disable multicast streaming
+|multicast_ipv4 |Do we activate IPv4 multicast | 0 | 0 or 1 | Put this option to 1 to enable IPv4 multicast streaming
 |multicast_ipv6 |Do we activate IPv6 multicast | 0 | 0 or 1 |
 |multicast_iface4 |The network interface to send IPv4 multicast packets (eth1, eth2 etc...) | empty (let the system choose) |  |
 |multicast_iface6 |The network interface to send IPv6 multicast packets (eth1, eth2 etc...) | empty (let the system choose) |  |
@@ -323,21 +360,269 @@ HTTP unicast parameters
 |unicast_queue_size | The maximum size of the buffering when writting to a client fails | 512kBytes | in Bytes.
 |playlist_ignore_dead | Do we exclude dead channels (no traffic) from playlist? | 0  | 0 or 1 | Exclude dead and include alive channels on each playlist request.
 |playlist_ignore_scrambled_ratio | Do we exclude overscrambled from playlist? | 0  | 0(off), 1-100 | Exclude channels with percent of scrambled packets more than specified.
+|socket_sendbuf_size | Socket send buffer size in bytes | 0 | 0-65536 | 0 = use system default. Larger values may improve performance for high-bitrate streams.
+|flush_on_eagain | Drop data when socket buffer is full (EAGAIN) | 0 | 0 or 1 | When enabled, data is dropped instead of queuing when socket buffer is full. Use with caution.
+|tcp_keepalive | Enable TCP keepalive probes | 1 | 0 or 1 | Detects dead connections and cleans them up automatically.
+|tcp_keepalive_idle | Keepalive idle time in seconds | 30 | 1-3600 | Time before sending first keepalive probe.
+|tcp_keepalive_interval | Keepalive probe interval in seconds | 5 | 1-3600 | Interval between keepalive probes.
+|tcp_keepalive_count | Number of failed probes before disconnect | 3 | 1-10 | Failed probes before considering connection dead.
+|tcp_window_scaling | Enable TCP window scaling (RFC 1323) | 1 | 0 or 1 | Improves performance for high-bandwidth connections.
+|tcp_selective_acks | Enable TCP selective ACKs (SACK) | 1 | 0 or 1 | Improves performance for lossy networks.
 |==================================================================================================================
 
-HLS parameters
-~~~~~~~~~~~~~~~~~~~~~~~
-[width="80%",cols="2,8,1,5",options="header"]
+HLS (HTTP Live Streaming) parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[width="80%",cols="2,6,1,2,5",options="header"]
 |==================================================================================================================
-|Parameter name |Description | Default value |Comments
-|hls |Set this option to one to activate HLS in file mode | 0  |   If using manual channel configurations, service_id is required to work correctly
-|hls_storage_dir |Storage directory for HLS files and playlists | /tmp  |  Any HTTP server can point to that dir and produce HLS stream
-|hls_playlist_name |Name of master playlist | playlist.m3u8  |  Can be used to run multiple instances in one storage dir
-|hls_rotate_count |HLS chunk count in playlist| 2 |  First usable playlist will be generated when all chunks are ready
-|hls_rotate_time |HLS chunk duration in seconds| 10 |
-|hls_rotate_iframe |Try to place I-Frame at beginning of segment| 0 |  With this option set to one chunk rotate will be delayed until reception of I-Frame, but no more than 2*hls_rotate_time
+|Parameter name |Description | Default value | Possible values | Comments
+|hls |Enable HTTP Live Streaming output | 0 | 0 or 1 | Creates .m3u8 playlists and .ts segments for HLS streaming. Requires service_id for manual channel configurations.
+|hls_storage_dir |Directory for HLS files and playlists | /tmp | path | Any HTTP server can serve files from this directory. Ensure write permissions.
+|hls_playlist_name |Name of the master playlist file | playlist.m3u8 | filename | Used to run multiple MuMuDVB instances in the same storage directory.
+|hls_rotate_count |Number of segments to keep in playlist | 2 | 1-10 | More segments = better buffering but more disk usage. First usable playlist generated when all segments are ready.
+|hls_rotate_time |Segment duration in seconds | 10 | 1-60 | Shorter segments = lower latency but more overhead. Longer segments = better efficiency but higher latency.
+|hls_rotate_iframe |Wait for I-frame before segment rotation | 0 | 0 or 1 | When enabled, segment rotation waits for I-frame (max 2×hls_rotate_time). Improves playback quality but may increase latency.
 |==================================================================================================================
 
+**HLS Configuration Examples:**
+
+Basic HLS setup::
+----
+hls=1
+hls_storage_dir=/var/www/html/hls
+hls_playlist_name=channels.m3u8
+hls_rotate_count=3
+hls_rotate_time=6
+----
+
+Low-latency HLS setup::
+----
+hls=1
+hls_rotate_time=2
+hls_rotate_count=5
+hls_rotate_iframe=1
+----
+
+High-quality HLS setup::
+----
+hls=1
+hls_rotate_time=10
+hls_rotate_count=6
+hls_rotate_iframe=1
+----
+
+
+[[unified_channel_system]]
+Unified Channel System
+----------------------
+
+The unified channel system is an advanced feature that allows you to configure multiple tuners and frequencies in a single MuMuDVB instance, with automatic assignment of clients to available tuners. This system is particularly useful when you have multiple DVB cards and want to efficiently utilize them without manual configuration of each tuner-frequency combination.
+
+[[unified_benefits]]
+Benefits of the Unified System
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* **Automatic Resource Management**: The system automatically detects which tuners can access which frequencies and assigns them dynamically
+* **Resource Optimization**: Uses the minimum number of tuners to cover all frequencies, while supporting multiple unicast clients per frequency
+* **Simplified Configuration**: Instead of manually configuring each tuner-frequency pair, you simply list all tuners and frequencies
+* **Single Port Access**: All channels are served on the same HTTP port with frequency-based routing
+* **Better Resource Utilization**: Tuners are used efficiently based on actual demand rather than static assignments
+* **Easier Scaling**: Adding new tuners or frequencies requires minimal configuration changes
+
+[[unified_parameters]]
+Unified Channel System Parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+[width="90%",cols="2,6,1,2,1,4",options="header"]
+|==================================================================================================================
+|Parameter name |Description | Default value | Possible values | Can be detected/autoset | Comments
+|unified_cards |Comma-separated list of DVB card IDs to use | | 0,1,2,3, auto | No | Required for unified system. Use 'auto' to automatically detect all available cards. Each card maps to `/dev/dvb/adapterN/`
+|unified_frequencies |Comma-separated list of frequencies to serve | | 509000000,515000000 | No | Frequencies in Hz. System will test each card for each frequency
+|==================================================================================================================
+
+[[unified_parameter_details]]
+Parameter Details
+~~~~~~~~~~~~~~~~~
+
+**unified_cards**::
+  Specifies which DVB cards to use in the unified system. Each card ID corresponds to a DVB adapter directory:
+  
+  * Card 0 → `/dev/dvb/adapter0/frontend0`
+  * Card 1 → `/dev/dvb/adapter1/frontend0`
+  * Card 2 → `/dev/dvb/adapter2/frontend0`
+  * Card 3 → `/dev/dvb/adapter3/frontend0`
+  
+  For example, `unified_cards=0,1,2,3` means you want to use 4 separate DVB cards (adapters 0, 1, 2, and 3).
+  
+  **Auto-detection**: Use `unified_cards=auto` to automatically detect and use all available DVB cards on the system. This is particularly useful when you don't know the exact card numbers or want to use all available hardware.
+
+**unified_frequencies**::
+  Lists all frequencies you want to serve through the unified system. The system will automatically test each card to see which frequencies it can access. Frequencies should be specified in Hz (e.g., 509000000 for 509 MHz).
+
+[[unified_example]]
+Example Configuration
+~~~~~~~~~~~~~~~~~~~~
+
+.Basic unified channel system configuration
+---------------------------
+# Enable unified channel system with 4 DVB cards
+unified_cards=0,1,2,3
+unified_frequencies=509000000,515000000,521000000,539000000,581000000,593000000
+
+# Common settings for all channels
+
+.Auto-detection unified channel system configuration
+---------------------------
+# Automatically detect and use all available DVB cards
+unified_cards=auto
+unified_frequencies=509000000,515000000,521000000,539000000,581000000,593000000
+
+# Common settings for all channels
+autoconfiguration=full
+common_port=1234
+unicast=1
+port_http=10000
+---------------------------
+
+[[unified_advanced_example]]
+Advanced Configuration Example
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.Complete unified channel system with all options
+---------------------------
+# Unified channel system configuration with 6 DVB cards
+unified_cards=0,1,2,3,4,5
+unified_frequencies=509000000,515000000,521000000,539000000,581000000,593000000,189000000,177000000
+
+# Global settings
+autoconfiguration=full
+common_port=1234
+multicast_ipv4=1
+multicast_ipv6=1
+multicast_ttl=2
+rewrite_pat=1
+rewrite_sdt=1
+sort_eit=1
+
+# HTTP unicast settings
+unicast=1
+unicast_queue_size=4194304
+port_http=10000
+
+# Optional: SAP announces
+sap=1
+sap_default_group=Unified Channels
+sap_organisation=My DVB Server
+
+# Optional: CAM support for scrambled channels
+#cam_support=1
+
+# Optional: Software CAM support
+#scam_support=1
+#scam_ring_buffer_size=131072
+#scam_decsa_delay=4500000
+---------------------------
+
+[[unified_operation]]
+How It Works
+~~~~~~~~~~~~
+
+The unified channel system operates through several phases:
+
+[[unified_startup]]
+Startup Phase
+^^^^^^^^^^^^^
+
+1. **Configuration Parsing**: The system reads the unified configuration parameters and validates them
+2. **Tuner Initialization**: Each specified tuner is initialized with its corresponding card
+3. **Capability Detection**: The system tests each tuner to determine which frequencies it can access
+4. **Resource Mapping**: A mapping table is created showing which tuners can serve which frequencies
+
+[[unified_runtime]]
+Runtime Phase
+^^^^^^^^^^^^^
+
+1. **Client Request**: When a client connects requesting a specific frequency (e.g., `http://server:10000/freq/509000000`)
+2. **Tuner Selection**: The system selects an available tuner that can access the requested frequency
+3. **Resource Optimization**: If multiple tuners can access the same frequency, only one tuner is assigned, but it can serve multiple unicast clients
+4. **Dynamic Assignment**: Tuners are assigned and released dynamically based on demand
+
+[[unified_features]]
+Key Features
+^^^^^^^^^^^^
+
+* **Automatic Failover**: If a tuner becomes unavailable, the system automatically switches to another tuner
+* **Resource Optimization**: Uses the minimum number of tuners to cover all frequencies, while supporting multiple unicast clients per frequency
+* **Multi-Client Support**: Each tuner can serve multiple unicast clients simultaneously for the same frequency/sub-channel
+* **Single Port Access**: All channels are served on the same HTTP port with frequency-based routing
+* **Thread Safety**: The system uses mutexes to ensure thread-safe operation across multiple tuners
+
+[[unified_multi_client]]
+Multi-Client Architecture
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The unified channel system is designed to efficiently handle multiple unicast clients:
+
+* **Single Tuner per Frequency**: Each frequency is assigned to exactly one tuner to minimize resource usage
+* **Multiple Clients per Tuner**: Each tuner can serve multiple unicast clients simultaneously for the same frequency
+* **Shared Stream Processing**: The tuner processes the DVB stream once and distributes it to all connected clients
+* **Efficient Resource Usage**: Instead of dedicating a tuner per client, one tuner handles all clients for a frequency
+
+Example Scenario:
+- 3 clients request frequency 509000000 Hz
+- 2 clients request frequency 515000000 Hz  
+- 1 client requests frequency 521000000 Hz
+- **Result**: Only 3 tuners needed (one per frequency), not 6 tuners
+
+[[unified_client_access]]
+Client Access
+~~~~~~~~~~~~~
+
+Clients can access channels using the following URL format:
+
+`http://server:port/freq/FREQUENCY`
+
+[[unified_url_examples]]
+URL Examples
+^^^^^^^^^^^^
+
+* `http://localhost:10000/freq/509000000` - Accesses 509 MHz frequency
+* `http://localhost:10000/freq/515000000` - Accesses 515 MHz frequency  
+* `http://192.168.1.100:10000/freq/593000000` - Accesses 593 MHz frequency on remote server
+
+[[unified_client_behavior]]
+Client Behavior
+^^^^^^^^^^^^^^^
+
+* **Automatic Routing**: The system automatically routes requests to available tuners
+* **Resource Optimization**: Uses the minimum number of tuners to cover all frequencies, while supporting multiple unicast clients per frequency
+* **Failover**: If a tuner becomes unavailable, clients are automatically moved to another tuner
+* **Error Handling**: If no tuner is available for a frequency, the client receives an appropriate error message
+
+[[unified_troubleshooting]]
+Troubleshooting
+~~~~~~~~~~~~~~
+
+[[unified_common_issues]]
+Common Issues
+^^^^^^^^^^^^^
+
+**No tuner available for frequency**::
+  This occurs when all tuners that can access the requested frequency are busy or unavailable. Check that:
+  - The frequency is correctly specified in `unified_frequencies`
+  - At least one tuner can physically access the frequency
+  - Tuners are not all busy with other clients
+
+**Tuner initialization failed**::
+  This usually indicates a hardware or driver issue. Check that:
+  - DVB cards are properly installed and recognized
+  - Tuner IDs match the physical tuners
+  - Card IDs correctly map to installed cards
+
+**Configuration errors**::
+  Common configuration mistakes include:
+  - Mismatched number of tuners and cards in the lists
+  - Invalid frequency formats (must be in Hz)
+  - Duplicate tuner IDs
 
 [[channel_parameters]]
 Channel parameters
@@ -401,6 +686,165 @@ If you don't have access to the PIDs via a website like http://www.kingofsat.net
 
 
 You don't know on which frequency to tune and the channels you can receive. In this case, you can use <<w_scan,w_scan>> or using <<scan_inital_tuning,scan>> from dvb-apps if you have an initial tuning config file.
+
+[[troubleshooting]]
+Configuration Troubleshooting
+-----------------------------
+
+This section helps you resolve common configuration issues and understand error messages.
+
+[[common_errors]]
+Common Configuration Errors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**"Config issue : unknow symbol : X"**
++
+This error occurs when MuMuDVB encounters an unrecognized configuration parameter. Common causes:
++
+* **Typo in parameter name**: Check spelling (e.g., `autoconf` should be `autoconfiguration`)
+* **Missing parameter**: Parameter not implemented in your MuMuDVB version
+* **Wrong context**: Parameter used in wrong section (e.g., channel parameter used globally)
++
+**Solutions:**
++
+* Check parameter spelling against this documentation
+* Verify parameter is supported in your MuMuDVB version
+* Ensure parameter is used in correct context (global vs per-channel)
+
+**"You have to start a channel first (using new_channel)"**
++
+This error occurs when channel-specific parameters are used before declaring a channel.
++
+**Solution:** Add `new_channel` before channel-specific parameters:
++
+----
+# Wrong
+service_id=123
+name=My Channel
+
+# Correct
+new_channel
+service_id=123
+name=My Channel
+----
+
+**"Card defined on the command line: X, overrides conf file Y"**
++
+This warning appears when both command-line `-c` option and configuration file `card=` parameter are used.
++
+**Solution:** Use either command-line option OR configuration file parameter, not both.
+
+[[deprecated_parameters]]
+Deprecated Parameters
+~~~~~~~~~~~~~~~~~~~~
+
+The following parameters are deprecated and should be replaced:
+
+[width="80%",cols="2,4,2,4",options="header"]
+|==================================================================================================================
+|Deprecated Parameter |Replacement |Status |Notes
+|ts_id |service_id |Deprecated |Use `service_id` instead. `ts_id` still works but shows warning.
+|unified_tuners |unified_cards |Deprecated |Use `unified_cards` instead. `unified_tuners` still works but shows warning.
+|==================================================================================================================
+
+[[parameter_conflicts]]
+Parameter Conflicts
+~~~~~~~~~~~~~~~~~~
+
+**Port Conflicts:**
++
+* `port_http` (unicast HTTP port) vs `port` (multicast port) vs `unicast_port` (per-channel unicast port)
+* These serve different purposes and can use the same port numbers
+
+**IP Address Conflicts:**
++
+* `ip_http` (unicast HTTP bind address) vs `ip` (multicast IPv4) vs `ip6` (multicast IPv6)
+* These serve different purposes and can use the same IP addresses
+
+**Card Specification:**
++
+* Command-line `-c` option vs configuration file `card=` parameter
+* Command-line option takes precedence
+
+[[validation_errors]]
+Parameter Validation Errors
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Frequency Range Errors:**
++
+----
+# Invalid frequency (too low)
+freq=100000
+
+# Valid frequency
+freq=515000000
+----
+
+**Port Range Errors:**
++
+----
+# Invalid port (out of range)
+port_http=99999
+
+# Valid port
+port_http=4242
+----
+
+**Satellite Number Errors:**
++
+----
+# Invalid satellite number (too high)
+sat_number=5
+
+# Valid satellite number
+sat_number=2
+----
+
+[[configuration_examples]]
+Configuration Examples
+~~~~~~~~~~~~~~~~~~~~~
+
+**Basic DVB-T Configuration:**
++
+----
+# Global settings
+autoconfiguration=full
+unicast=1
+port_http=4242
+
+# Tuning parameters
+delivery_system=DVB-T
+freq=515000000
+bandwidth=8MHz
+----
+
+**Multi-Card Unified System:**
++
+----
+# Unified system
+unified_cards=0,1,2
+unified_frequencies=515000000,551000000,593000000
+
+# Global settings
+autoconfiguration=full
+unicast=1
+port_http=4242
+----
+
+**HLS Streaming Setup:**
++
+----
+# Enable HLS
+hls=1
+hls_storage_dir=/var/www/html/hls
+hls_playlist_name=channels.m3u8
+hls_rotate_time=6
+hls_rotate_count=3
+
+# Basic settings
+autoconfiguration=full
+unicast=1
+----
 
 [[w_scan]]
 Using w_scan to get an initial tuning file

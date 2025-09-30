@@ -28,6 +28,8 @@
 #ifndef _UNICAST_QUEUE_H
 #define _UNICAST_QUEUE_H
 
+#include "bitrate_monitor.h"
+
 #define UNICAST_DEFAULT_QUEUE_MAX 1024*512
 /**How many packets we try to send from the queue per new packet. This value MUST be at least 2*/
 #define UNICAST_MULTIPLE_QUEUE_SEND 3
@@ -55,6 +57,11 @@ typedef struct unicast_queue_header_t{
 
 
 void unicast_queue_clear(unicast_queue_header_t *header);
+
+// Bitrate monitoring functions
+int init_global_bitrate_monitor(void);
+void cleanup_global_bitrate_monitor(void);
+bitrate_monitor_t *get_global_bitrate_monitor(void);
 
 
 

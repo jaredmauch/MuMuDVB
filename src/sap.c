@@ -521,8 +521,7 @@ int sap_add_program(mumudvb_channel_t *channel, sap_p_t *sap_p, mumudvb_sap_mess
 	}
 
 	/**@subsection channel's group
-    a=cat channel's group
-    a=x-plgroup backward compatibility
+    a=cat channel's group (RFC 2974 compliant)
 	 */
 	if(strlen(channel->sap_group)||strlen(sap_p->sap_default_group))
 	{
@@ -534,12 +533,8 @@ int sap_add_program(mumudvb_channel_t *channel, sap_p_t *sap_p, mumudvb_sap_mess
 		}
 		if(channel->socketOut4)
 			mumu_string_append(&payload4,"a=cat:%s\r\n", channel->sap_group);
-		/* backward compatibility with VLC 0.7.3-2.0.0 senders */
-		mumu_string_append(&payload4,"a=x-plgroup:%s\r\n", channel->sap_group);
 		if(channel->socketOut6)
 			mumu_string_append(&payload6,"a=cat:%s\r\n", channel->sap_group);
-		/* backward compatibility with VLC 0.7.3-2.0.0 senders */
-		mumu_string_append(&payload6,"a=x-plgroup:%s\r\n", channel->sap_group);
 	}
 
 	/**  @subsection media name and transport address See RFC 1890

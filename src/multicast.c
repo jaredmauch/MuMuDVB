@@ -43,7 +43,7 @@ void init_multicast_v(multi_p_t *multi_p)
     *multi_p = (multi_p_t) {
         .multicast = 1,
         .multicast_ipv6 = 0,
-        .multicast_ipv4 = 1,
+        .multicast_ipv4 = 0,
         .ttl = DEFAULT_TTL,
         .common_port = 1234,
         .auto_join = 0,

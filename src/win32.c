@@ -115,6 +115,200 @@ void usleep(unsigned int usec)
     }
 }
 
+// Better Windows sleep function using high-resolution timer
+void win32_sleep_us(unsigned int usec)
+{
+    if (usec == 0) return;
+    
+    // Use high-resolution timer for better accuracy
+    LARGE_INTEGER frequency, start, end, elapsed;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&start);
+    
+    // Calculate target elapsed time in ticks
+    LONGLONG target_ticks = (LONGLONG)((double)usec * frequency.QuadPart / 1000000.0);
+    
+    do {
+        // Use Sleep() for the bulk of the time to avoid busy waiting
+        if (usec > 1000) {
+            Sleep(usec / 1000);
+            usec = usec % 1000;
+        }
+        
+        // Use high-resolution timer for the remainder
+        QueryPerformanceCounter(&end);
+        elapsed.QuadPart = end.QuadPart - start.QuadPart;
+        
+        if (elapsed.QuadPart >= target_ticks) {
+            break;
+        }
+        
+        // Yield CPU to other threads
+        Sleep(0);
+        
+    } while (elapsed.QuadPart < target_ticks);
+}
+
+// Windows equivalent of nanosleep() - most precise sleep
+int win32_nanosleep(const struct timespec *req, struct timespec *rem)
+{
+    if (!req) return -1;
+    
+    // Convert to microseconds
+    unsigned int usec = (unsigned int)(req->tv_sec * 1000000 + req->tv_nsec / 1000);
+    
+    win32_sleep_us(usec);
+    
+    if (rem) {
+        rem->tv_sec = 0;
+        rem->tv_nsec = 0;
+    }
+    
+    return 0;
+}
+
+// Windows equivalent of poll() for file descriptors
+int win32_poll(struct pollfd *fds, int nfds, int timeout_ms)
+{
+    if (!fds || nfds <= 0) {
+        // No file descriptors, just sleep for timeout
+        if (timeout_ms > 0) {
+            Sleep(timeout_ms);
+        }
+        return 0;
+    }
+
+    HANDLE *handles = (HANDLE*)malloc(nfds * sizeof(HANDLE));
+    if (!handles) {
+        return -1;
+    }
+
+    int valid_handles = 0;
+    for (int i = 0; i < nfds; i++) {
+        if (fds[i].fd >= 0) {
+            // Convert file descriptor to Windows handle
+            handles[valid_handles] = (HANDLE)(intptr_t)fds[i].fd;
+            valid_handles++;
+        }
+    }
+
+    if (valid_handles == 0) {
+        // No valid file descriptors, just sleep for timeout
+        free(handles);
+        if (timeout_ms > 0) {
+            Sleep(timeout_ms);
+        }
+        return 0;
+    }
+
+    // Wait for any of the handles to become ready
+    DWORD wait_result = WaitForMultipleObjects(valid_handles, handles, FALSE, 
+                                             timeout_ms > 0 ? timeout_ms : INFINITE);
+
+    free(handles);
+
+    if (wait_result == WAIT_FAILED) {
+        return -1;
+    } else if (wait_result == WAIT_TIMEOUT) {
+        return 0; // Timeout
+    } else if (wait_result >= WAIT_OBJECT_0 && wait_result < WAIT_OBJECT_0 + valid_handles) {
+        // At least one handle is ready
+        int ready_count = 0;
+        for (int i = 0; i < nfds; i++) {
+            if (fds[i].fd >= 0) {
+                fds[i].revents = fds[i].events; // Assume all requested events are ready
+                ready_count++;
+            } else {
+                fds[i].revents = 0;
+            }
+        }
+        return ready_count;
+    }
+
+    return 0;
+}
+
+// Windows equivalent of poll() for sockets (more accurate)
+int win32_poll_sockets(struct pollfd *fds, int nfds, int timeout_ms)
+{
+    if (!fds || nfds <= 0) {
+        if (timeout_ms > 0) {
+            Sleep(timeout_ms);
+        }
+        return 0;
+    }
+
+    // Use WSAEventSelect for socket polling
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        return -1;
+    }
+
+    HANDLE *events = (HANDLE*)malloc(nfds * sizeof(HANDLE));
+    if (!events) {
+        WSACleanup();
+        return -1;
+    }
+
+    int valid_events = 0;
+    for (int i = 0; i < nfds; i++) {
+        if (fds[i].fd >= 0) {
+            events[valid_events] = WSACreateEvent();
+            if (events[valid_events] != WSA_INVALID_EVENT) {
+                SOCKET sock = (SOCKET)fds[i].fd;
+                long event_mask = 0;
+                if (fds[i].events & POLLIN) event_mask |= FD_READ | FD_ACCEPT | FD_CLOSE;
+                if (fds[i].events & POLLOUT) event_mask |= FD_WRITE | FD_CONNECT;
+                if (fds[i].events & POLLPRI) event_mask |= FD_OOB;
+                
+                WSAEventSelect(sock, events[valid_events], event_mask);
+                valid_events++;
+            }
+        }
+    }
+
+    if (valid_events == 0) {
+        free(events);
+        WSACleanup();
+        if (timeout_ms > 0) {
+            Sleep(timeout_ms);
+        }
+        return 0;
+    }
+
+    DWORD wait_result = WaitForMultipleObjects(valid_events, events, FALSE,
+                                             timeout_ms > 0 ? timeout_ms : INFINITE);
+
+    // Clean up events
+    for (int i = 0; i < valid_events; i++) {
+        WSACloseEvent(events[i]);
+    }
+    free(events);
+    WSACleanup();
+
+    if (wait_result == WAIT_FAILED) {
+        return -1;
+    } else if (wait_result == WAIT_TIMEOUT) {
+        return 0; // Timeout
+    } else if (wait_result >= WAIT_OBJECT_0 && wait_result < WAIT_OBJECT_0 + valid_events) {
+        // At least one socket is ready
+        int ready_count = 0;
+        int event_index = 0;
+        for (int i = 0; i < nfds; i++) {
+            if (fds[i].fd >= 0) {
+                fds[i].revents = fds[i].events; // Assume all requested events are ready
+                ready_count++;
+                event_index++;
+            } else {
+                fds[i].revents = 0;
+            }
+        }
+        return ready_count;
+    }
+
+    return 0;
+}
+
 void sleep(unsigned int sec)
 {
     usleep(sec * 1000000);

@@ -57,6 +57,7 @@
 #include "errors.h"
 #include "cam.h"
 #include "ts.h"
+#include "event_timing.h"
 #include "mumudvb.h"
 #include "log.h"
 
@@ -457,7 +458,7 @@ static void *camthread_func(void* arg)
 
 	//Loop
 	while(!cam_p->camthread_shutdown) {
-		usleep(100*1000); //some waiting - 100ms (see specs)
+		EVENT_MSLEEP(100); //some waiting - 100ms (see specs)
 
 		gettimeofday (&tv, (struct timezone *) NULL);
 		now = tv.tv_sec - real_start_time;
@@ -591,7 +592,7 @@ static void *camthread_func(void* arg)
 					log_message( log_module,  MSG_DEBUG,  "cam state : Error during the query (0x%x)\n", camstate);
 					break;
 				}
-				usleep(10000);
+				EVENT_MSLEEP(10);
 				i++;
 			} while(camstate!=DVBCA_CAMSTATE_INITIALISING && i < MAX_WAIT_AFTER_RESET);
 			if(i==MAX_WAIT_AFTER_RESET)
@@ -610,9 +611,9 @@ static void *camthread_func(void* arg)
 	for (i=0;i<SL_MAX_SESSIONS;i++)
 	{
 		en50221_sl_destroy_session(cam_p->sl,i);
-		usleep(50*1000);
+		EVENT_MSLEEP(50);
 		cam_p->stdcam->poll(cam_p->stdcam);
-		usleep(50*1000);
+		EVENT_MSLEEP(50);
 		cam_p->stdcam->poll(cam_p->stdcam);
 	}
 

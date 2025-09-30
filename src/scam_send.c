@@ -40,6 +40,7 @@
 #include "mumudvb.h"
 #include "log.h"
 #include "scam_common.h"
+#include "event_timing.h"
 
 
 /**@file
@@ -86,7 +87,7 @@ void *sendthread_func(void* arg)
     if (to_send)
       break;
     else
-      usleep(50000);
+      EVENT_MSLEEP(50);
   }
 
   while(!channel->sendthread_shutdown) {
@@ -104,7 +105,7 @@ void *sendthread_func(void* arg)
       } else
         log_message( log_module, MSG_ERROR, "thread starved, channel %s %u %u\n",channel->name,to_descramble,to_send);
 
-      usleep(50000);
+      EVENT_MSLEEP(50);
       continue;
     }
 
