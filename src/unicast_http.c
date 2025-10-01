@@ -1190,12 +1190,42 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 								// Find available card for this frequency
 								int available_card_id = find_available_card_for_frequency(frequency, -1);
 								if (available_card_id >= 0) {
-									// Reserve the card for this frequency
-									if (reserve_card_for_frequency(available_card_id, frequency) == 0) {
-										log_message( log_module, MSG_INFO,"Channel %d (%s) assigned to card %d on frequency %.0f Hz (original card: %d)\n", 
+									// Check if card is already tuned to this frequency (pre-staged)
+									int card_already_tuned = 0;
+									if (global_unified_system) {
+										for (int i = 0; i < global_unified_system->num_cards; i++) {
+											if (global_unified_system->cards[i].card_id == available_card_id &&
+												global_unified_system->cards[i].current_freq == frequency &&
+												global_unified_system->cards[i].in_use) {
+												card_already_tuned = 1;
+												break;
+											}
+										}
+									}
+									
+									if (card_already_tuned) {
+										log_message( log_module, MSG_INFO,"Channel %d (%s) using pre-staged card %d on frequency %.0f Hz (original card: %d)\n", 
 												   requested_channel, target_enhanced_channel->base_channel.name, available_card_id, frequency, card_id);
 									} else {
-										log_message( log_module, MSG_ERROR,"Failed to reserve card %d for channel %d\n", available_card_id, requested_channel);
+										// Card not pre-staged, bootstrap it now
+										if (bootstrap_card_for_frequency(available_card_id, frequency) == 0) {
+											log_message( log_module, MSG_INFO,"Channel %d (%s) bootstrapped on card %d for frequency %.0f Hz (original card: %d)\n", 
+													   requested_channel, target_enhanced_channel->base_channel.name, available_card_id, frequency, card_id);
+										} else {
+											log_message( log_module, MSG_ERROR,"Failed to bootstrap card %d for channel %d frequency %.0f Hz\n", available_card_id, requested_channel, frequency);
+											err404=1;
+											requested_channel=0;
+										}
+									}
+									
+									// Convert enhanced channel to regular channel for client addition
+									// We need to ensure the regular channels array has this channel
+									if (requested_channel <= number_of_channels) {
+										// Copy the enhanced channel data to the regular channels array
+										memcpy(&channels[requested_channel-1], &target_enhanced_channel->base_channel, sizeof(mumudvb_channel_t));
+										log_message( log_module, MSG_DEBUG,"Updated regular channels array with enhanced channel %d data\n", requested_channel);
+									} else {
+										log_message( log_module, MSG_ERROR,"Channel %d exceeds regular channels array size %d\n", requested_channel, number_of_channels);
 										err404=1;
 										requested_channel=0;
 									}
