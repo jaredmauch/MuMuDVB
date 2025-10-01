@@ -3047,7 +3047,35 @@ int unicast_send_card_status(int Socket)
 			
 			card_count++;
 			
-			// Determine status based on card properties
+			// Get real-time frontend data
+			double real_freq_mhz = 0.0;
+			fe_status_t fe_status = 0;
+			int frontend_tuned = 0;
+			int has_signal = 0;
+			int has_lock = 0;
+			
+			// Try to read real-time frontend status
+			char frontend_path[256];
+			snprintf(frontend_path, sizeof(frontend_path), "/dev/dvb/adapter%d/frontend0", card->card_id);
+			int fd_frontend = open(frontend_path, O_RDONLY | O_NONBLOCK);
+			if (fd_frontend >= 0) {
+				// Read frontend status
+				if (ioctl(fd_frontend, FE_READ_STATUS, &fe_status) >= 0) {
+					has_signal = (fe_status & FE_HAS_SIGNAL) ? 1 : 0;
+					has_lock = (fe_status & FE_HAS_LOCK) ? 1 : 0;
+					frontend_tuned = has_signal || has_lock;
+				}
+				
+				// Read current frequency
+				struct dvb_frontend_parameters params;
+				if (ioctl(fd_frontend, FE_GET_FRONTEND, &params) >= 0) {
+					real_freq_mhz = params.frequency / 1000000.0;
+				}
+				
+				close(fd_frontend);
+			}
+			
+			// Determine status based on real frontend data and card properties
 			const char *status_text = "Unknown";
 			const char *status_class = "unknown";
 			const char *indicator_class = "gray";
@@ -3062,12 +3090,25 @@ int unicast_send_card_status(int Socket)
 				card_in_use = is_card_in_use(card->card_id);
 			}
 			
-			if (card_in_use) {
+			// Determine status based on real frontend data
+			if (frontend_tuned && has_lock) {
+				status_text = "Locked";
+				status_class = "busy";
+				indicator_class = "red";
+				usage_type = "tuning";
+				is_tuning = 1;
+			} else if (frontend_tuned && has_signal) {
+				status_text = "Tuning";
+				status_class = "tuning";
+				indicator_class = "yellow";
+				usage_type = "tuning";
+				is_tuning = 1;
+			} else if (card_in_use) {
 				status_text = "In Use";
 				status_class = "busy";
 				indicator_class = "red";
 				usage_type = "active";
-				is_tuning = 1; // Assume tuning if in use
+				is_tuning = 1;
 			} else if (card->in_use) {
 				status_text = "Reserved";
 				status_class = "tuning";
@@ -3084,9 +3125,9 @@ int unicast_send_card_status(int Socket)
 			// Format time (simplified since last_used field doesn't exist)
 			char time_str[64] = "Unknown";
 			
-			// Safe frequency formatting
-			double freq_mhz = 0.0;
-			if (card->current_freq > 0) {
+			// Use real frequency if available, otherwise fall back to card->current_freq
+			double freq_mhz = real_freq_mhz;
+			if (freq_mhz == 0.0 && card->current_freq > 0) {
 				freq_mhz = card->current_freq / 1000000.0;
 			}
 			
@@ -3095,6 +3136,9 @@ int unicast_send_card_status(int Socket)
 			if (card_in_use && strcmp(usage_type, "active") == 0) {
 				// Check if this card is being used by parallel scanning
 				// We can determine this by checking if the card is registered for "parallel_system_tuning"
+				parallel_scan_status = "Yes";
+			} else if (frontend_tuned && (strcmp(usage_type, "tuning") == 0)) {
+				// If frontend is actively tuned, it's likely being used for scanning
 				parallel_scan_status = "Yes";
 			}
 			
