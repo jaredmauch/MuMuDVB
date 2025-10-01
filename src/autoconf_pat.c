@@ -118,8 +118,10 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 	if(pat->version_number==auto_p->pat_version)
 	{
 		//check if we saw this section
-		if(auto_p->pat_sections_seen[pat->section_number])
+		if(auto_p->pat_sections_seen[pat->section_number]) {
+			pthread_mutex_unlock(&chan_p->lock);
 			return 0;
+		}
 	}
 	else
 	{
@@ -177,6 +179,7 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 	if(pat->current_next_indicator == 0)
 	{
 		log_message( log_module, MSG_DEBUG,"The current_next_indicator is set to 0, this PAT is not valid for the current stream\n");
+		pthread_mutex_unlock(&chan_p->lock);
 		return 0;
 	}
 
@@ -208,6 +211,7 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 	{
 		log_message( log_module, MSG_DETAIL,"PAT  %d sections on %d are missing",
 				sections_missing,pat->last_section_number);
+		pthread_mutex_unlock(&chan_p->lock);
 		return 0;
 	}
 	else
@@ -303,6 +307,7 @@ int autoconf_pat_update_chan(pat_prog_t  *prog,int pat_version,mumu_chan_p_t *ch
 									pat_version,
 									HILO(prog->program_number),
 									chan_p->number_of_channels+1);
+			pthread_mutex_unlock(&chan_p->lock);
 			return 0;
 		}
 		log_message( log_module, MSG_FLOOD,"PAT version %d program %d  NEW channel %d",
