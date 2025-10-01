@@ -789,6 +789,13 @@ int parse_transport_stream_with_autoconf(uint8_t *ts_data, ssize_t data_size,
                 }
             }
             
+            // Validate card structure before calling autoconf
+            if (!card || !card->chan_p) {
+                log_message(log_module, MSG_ERROR, "card-%d Invalid card structure (card=%p, chan_p=%p) in parse_transport_stream_with_autoconf", 
+                           card ? card->card_id : -1, (void*)card, card ? (void*)card->chan_p : NULL);
+                continue;
+            }
+            
             // Call autoconf to process this packet
             int ret = autoconf_new_packet(pid, packet, card->auto_p, &dummy_fds, 
                                         card->chan_p, &dummy_tune, &dummy_multi, 

@@ -84,8 +84,27 @@ void autoconf_pat_need_update(auto_p_t *auto_p, unsigned char *buf)
  */
 int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 {
+	// Validate input parameters
+	if (!auto_p || !chan_p) {
+		log_message(log_module, MSG_ERROR, "card-%d autoconf_read_pat: Invalid parameters (auto_p=%p, chan_p=%p)", 
+		           card_id, (void*)auto_p, (void*)chan_p);
+		return -1;
+	}
+	
+	// Validate chan_p is not pointing to obviously invalid memory
+	// Check if the pointer is within reasonable bounds and not null
+	if ((uintptr_t)chan_p < 0x1000 || (uintptr_t)chan_p > 0x7fffffffffff) {
+		log_message(log_module, MSG_ERROR, "card-%d autoconf_read_pat: Invalid chan_p pointer: %p", 
+		           card_id, (void*)chan_p);
+		return -1;
+	}
+	
 	// Protect the entire function with chan_p mutex to prevent race conditions
-	pthread_mutex_lock(&chan_p->lock);
+	// Use a safer approach to avoid segfaults on corrupted mutex
+	if (pthread_mutex_lock(&chan_p->lock) != 0) {
+		log_message(log_module, MSG_ERROR, "card-%d autoconf_read_pat: Failed to lock chan_p mutex", card_id);
+		return -1;
+	}
 	mumudvb_ts_packet_t *pat_mumu;
 	unsigned char *buf=NULL;
 	pat_mumu=auto_p->autoconf_temp_pat;
