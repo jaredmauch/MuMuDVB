@@ -2028,6 +2028,91 @@ int release_card_from_frequency_usage(int card_id, double frequency)
     return -1;
 }
 
+/** @brief Show feasible cards for a given frequency
+ * @param frequency The frequency to check
+ */
+static void show_feasible_cards_for_frequency(double frequency)
+{
+    // Use the global unified system if available
+    extern unified_channel_system_t *global_unified_system;
+    
+    if (!global_unified_system) {
+        log_message(log_module, MSG_INFO, "No unified system available to check feasible cards");
+        return;
+    }
+    
+    log_message(log_module, MSG_INFO, "Checking feasible cards for frequency %.0f Hz:", frequency);
+    
+    int feasible_count = 0;
+    int available_count = 0;
+    
+    for (int i = 0; i < global_unified_system->num_cards; i++) {
+        unified_card_t *card = &global_unified_system->cards[i];
+        
+        // Check if this card can handle this frequency
+        int can_handle_freq = 0;
+        for (int j = 0; j < card->num_frequencies; j++) {
+            if (card->available_frequencies[j] == frequency) {
+                can_handle_freq = 1;
+                break;
+            }
+        }
+        
+        if (can_handle_freq) {
+            feasible_count++;
+            
+            // Check if card is available and get detailed status
+            int is_available = 1;
+            char status_str[512] = "available";
+            char reason[256] = "";
+            
+            if (card->in_use) {
+                is_available = 0;
+                if (card->current_freq > 0) {
+                    snprintf(reason, sizeof(reason), "in_use (tuned to %.0f Hz)", card->current_freq);
+                } else {
+                    snprintf(reason, sizeof(reason), "in_use (no frequency set)");
+                }
+            } else {
+                // Check if card is locked by checking file descriptor availability
+                char frontend_path[256];
+                snprintf(frontend_path, sizeof(frontend_path), "/dev/dvb/adapter%d/frontend0", card->card_id);
+                
+                int test_fd = open(frontend_path, O_RDWR | O_NONBLOCK);
+                if (test_fd < 0) {
+                    is_available = 0;
+                    snprintf(reason, sizeof(reason), "locked (frontend error: %s)", strerror(errno));
+                } else {
+                    close(test_fd);
+                    snprintf(reason, sizeof(reason), "available");
+                }
+            }
+            
+            snprintf(status_str, sizeof(status_str), "%s", reason);
+            
+            if (is_available) {
+                available_count++;
+            }
+            
+            log_message(log_module, MSG_INFO, "  Card %d: %s", card->card_id, status_str);
+        } else {
+            // Card can't handle this frequency, but show it anyway for completeness
+            log_message(log_module, MSG_DEBUG, "  Card %d: cannot handle frequency %.0f Hz (supports %d frequencies)", 
+                       card->card_id, frequency, card->num_frequencies);
+        }
+    }
+    
+    if (feasible_count == 0) {
+        log_message(log_module, MSG_WARN, "No cards can handle frequency %.0f Hz", frequency);
+    } else if (available_count == 0) {
+        log_message(log_module, MSG_WARN, "Found %d feasible cards for frequency %.0f Hz, but none are available (all in use or locked)", 
+                    feasible_count, frequency);
+    } else {
+        log_message(log_module, MSG_INFO, "Found %d feasible cards (%d available) for frequency %.0f Hz", 
+                    feasible_count, available_count, frequency);
+    }
+}
+
 /** @brief Bootstrap a card for immediate use when a client requests data
  * @param card_id The card ID to bootstrap
  * @param frequency The frequency to tune to
@@ -2066,6 +2151,9 @@ int bootstrap_card_for_frequency(int card_id, double frequency)
     if (fd_frontend < 0) {
         log_message(log_module, MSG_ERROR, "Cannot open frontend %s for card %d (errno: %d)", 
                     frontend_path, card_id, errno);
+        
+        // Show feasible cards for this frequency
+        show_feasible_cards_for_frequency(frequency);
         return -1;
     }
     
@@ -2095,6 +2183,9 @@ int bootstrap_card_for_frequency(int card_id, double frequency)
     if (tune_result != 0) {
         log_message(log_module, MSG_ERROR, "Failed to tune card %d to frequency %.0f Hz (tune_result=%d)", 
                     card_id, frequency, tune_result);
+        
+        // Show feasible cards for this frequency
+        show_feasible_cards_for_frequency(frequency);
         return -1;
     }
     
