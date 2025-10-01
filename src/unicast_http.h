@@ -245,6 +245,7 @@ void init_unicast_v(unicast_parameters_t *unicast_vars);
 
 int unicast_send_card_utilization_status(int Socket);
 int unicast_send_tuner_scan_results(int Socket);
+int unicast_send_channel_names_list(int number_of_channels, mumudvb_channel_t *channels, int Socket);
 int unicast_generate_cards_list_html(struct unicast_reply* reply, int requested_card_id);
 
 
