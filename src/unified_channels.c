@@ -2061,17 +2061,26 @@ static void show_feasible_cards_for_frequency(double frequency)
     int feasible_count = 0;
     int available_count = 0;
     
+    // First check if this frequency is in the global frequency list
+    int frequency_in_list = 0;
+    for (int j = 0; j < global_unified_system->num_frequencies; j++) {
+        if (global_unified_system->frequencies[j] == frequency) {
+            frequency_in_list = 1;
+            break;
+        }
+    }
+    
+    if (!frequency_in_list) {
+        log_message(log_module, MSG_WARN, "Frequency %.0f Hz is not in the global frequency list", frequency);
+        return;
+    }
+    
     for (int i = 0; i < global_unified_system->num_cards; i++) {
         unified_card_t *card = &global_unified_system->cards[i];
         
-        // Check if this card can handle this frequency
-        int can_handle_freq = 0;
-        for (int j = 0; j < card->num_frequencies; j++) {
-            if (card->available_frequencies[j] == frequency) {
-                can_handle_freq = 1;
-                break;
-            }
-        }
+        // All cards can handle any frequency in the global list (they're all DVB cards)
+        // The real question is whether they're available and not locked
+        int can_handle_freq = 1; // Assume all cards can handle any frequency
         
         if (can_handle_freq) {
             feasible_count++;
