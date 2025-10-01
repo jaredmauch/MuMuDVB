@@ -88,13 +88,253 @@ static char *log_module="Unicast : ";
 // Global unified system reference (will be set by main system)
 extern unified_channel_system_t *global_unified_system;
 
+// Structure for card hold data
+struct card_hold_data {
+    int card_id;
+    double frequency;
+    time_t hold_start_time;
+};
+
+/**
+ * @brief Complete channel-to-card assignment flow
+ * @param requested_channel Channel number requested
+ * @param target_enhanced_channel Enhanced channel data
+ * @param assigned_card_id Output: assigned card ID
+ * @return 0 on success, -1 on error
+ */
+int assign_channel_to_card_complete_flow(int requested_channel, 
+                                        enhanced_channel_t *target_enhanced_channel,
+                                        int *assigned_card_id)
+{
+    if (!target_enhanced_channel || !assigned_card_id) {
+        return -1;
+    }
+    
+    // Step 1: Map the channel to frequency
+    double frequency = target_enhanced_channel->frequency;
+    if (frequency <= 0) {
+        log_message(log_module, MSG_ERROR, "Channel %d has invalid frequency %.0f Hz", 
+                   requested_channel, frequency);
+        return -1;
+    }
+    
+    log_message(log_module, MSG_INFO, "Step 1: Channel %d mapped to frequency %.0f Hz", 
+               requested_channel, frequency);
+    
+    // Step 2: Identify what cards can support that frequency
+    int capable_cards[16] = {0};
+    int num_capable_cards = 0;
+    
+    if (global_unified_system) {
+        for (int i = 0; i < global_unified_system->num_cards; i++) {
+            int card_id = global_unified_system->cards[i].card_id;
+            
+            // Check if this card can handle this frequency
+            for (int j = 0; j < global_unified_system->cards[i].num_frequencies; j++) {
+                if (global_unified_system->cards[i].available_frequencies[j] == frequency) {
+                    capable_cards[num_capable_cards] = card_id;
+                    num_capable_cards++;
+                    log_message(log_module, MSG_DEBUG, "Step 2: Card %d can handle frequency %.0f Hz", 
+                               card_id, frequency);
+                    break;
+                }
+            }
+        }
+    }
+    
+    if (num_capable_cards == 0) {
+        log_message(log_module, MSG_ERROR, "Step 2: No cards can support frequency %.0f Hz", frequency);
+        return -1;
+    }
+    
+    log_message(log_module, MSG_INFO, "Step 2: Found %d cards capable of frequency %.0f Hz", 
+               num_capable_cards, frequency);
+    
+    // Step 3: Check if any cards are currently tuned to that frequency
+    int currently_tuned_card = -1;
+    if (global_unified_system) {
+        for (int i = 0; i < global_unified_system->num_cards; i++) {
+            if (global_unified_system->cards[i].current_freq == frequency &&
+                global_unified_system->cards[i].in_use) {
+                currently_tuned_card = global_unified_system->cards[i].card_id;
+                log_message(log_module, MSG_INFO, "Step 3: Card %d is currently tuned to frequency %.0f Hz", 
+                           currently_tuned_card, frequency);
+                break;
+            }
+        }
+    }
+    
+    // Step 6: If a card is already tuned to this frequency, attach client to it
+    if (currently_tuned_card >= 0) {
+        log_message(log_module, MSG_INFO, "Step 6: Attaching client to existing card %d on frequency %.0f Hz", 
+                   currently_tuned_card, frequency);
+        
+        // Update client count for this card/frequency combination
+        update_channel_client_count(currently_tuned_card, frequency, 
+                                   target_enhanced_channel->base_channel.name,
+                                   target_enhanced_channel->base_channel.service_id, 1);
+        
+        *assigned_card_id = currently_tuned_card;
+        return 0;
+    }
+    
+    // Step 4: Assign a feasible card from the list if none is currently in use
+    int selected_card = -1;
+    for (int i = 0; i < num_capable_cards; i++) {
+        int card_id = capable_cards[i];
+        
+        // Check if this card is available (not in use by other clients)
+        if (!is_card_in_use(card_id)) {
+            selected_card = card_id;
+            log_message(log_module, MSG_INFO, "Step 4: Selected available card %d for frequency %.0f Hz", 
+                       card_id, frequency);
+            break;
+        } else {
+            log_message(log_module, MSG_DEBUG, "Step 4: Card %d is in use, trying next card", card_id);
+        }
+    }
+    
+    if (selected_card == -1) {
+        log_message(log_module, MSG_ERROR, "Step 4: No available cards for frequency %.0f Hz (all in use)", 
+                   frequency);
+        return -1;
+    }
+    
+    // Step 5: Mark card as in-use and tune selected card to frequency
+    log_message(log_module, MSG_INFO, "Step 5: Marking card %d as in-use and tuning to frequency %.0f Hz", 
+               selected_card, frequency);
+    
+    // Register card usage
+    register_card_usage(selected_card, frequency, "unicast_client");
+    
+    // Bootstrap the card (tune it and load TS data) for this frequency
+    if (bootstrap_card_for_frequency(selected_card, frequency) != 0) {
+        log_message(log_module, MSG_ERROR, "Step 5: Failed to bootstrap card %d for frequency %.0f Hz", 
+                   selected_card, frequency);
+        unregister_card_usage(selected_card, "unicast_client");
+        return -1;
+    }
+    
+    // Step 7: Increment in-use counter on card-freq pairing
+    update_channel_client_count(selected_card, frequency, 
+                               target_enhanced_channel->base_channel.name,
+                               target_enhanced_channel->base_channel.service_id, 1);
+    
+    log_message(log_module, MSG_INFO, "Step 7: Incremented client count for card %d, frequency %.0f Hz", 
+               selected_card, frequency);
+    
+    *assigned_card_id = selected_card;
+    return 0;
+}
+
+/**
+ * @brief Cleanup when client disconnects (Step 8) with 6-second hold period
+ * @param card_id Card ID to cleanup
+ * @param frequency Frequency to cleanup
+ * @param channel_name Channel name for logging
+ * @param service_id Service ID for tracking
+ */
+void cleanup_card_on_client_disconnect(int card_id, double frequency, 
+                                     const char *channel_name, int service_id)
+{
+    if (card_id < 0) return;
+    
+    log_message(log_module, MSG_INFO, "Step 8: Client disconnected from card %d, frequency %.0f Hz", 
+               card_id, frequency);
+    
+    // Decrement client count for this card/frequency combination
+    update_channel_client_count(card_id, frequency, channel_name, service_id, -1);
+    
+    // Check if card can be released (no more clients)
+    if (can_release_card(card_id)) {
+        log_message(log_module, MSG_INFO, "Step 8: No more clients on card %d, starting 6-second hold period", card_id);
+        
+        // Start a background thread to handle the 6-second hold period
+        pthread_t hold_thread;
+        struct card_hold_data *hold_data = malloc(sizeof(struct card_hold_data));
+        
+        if (hold_data) {
+            hold_data->card_id = card_id;
+            hold_data->frequency = frequency;
+            hold_data->hold_start_time = time(NULL);
+            
+            if (pthread_create(&hold_thread, NULL, hold_card_for_6_seconds, hold_data) == 0) {
+                pthread_detach(hold_thread); // Detach thread so it cleans up automatically
+                log_message(log_module, MSG_INFO, "Step 8: Started 6-second hold thread for card %d", card_id);
+            } else {
+                log_message(log_module, MSG_ERROR, "Step 8: Failed to create hold thread for card %d", card_id);
+                free(hold_data);
+                // Fallback: release immediately
+                release_card_immediately(card_id);
+            }
+        } else {
+            log_message(log_module, MSG_ERROR, "Step 8: Failed to allocate hold data for card %d", card_id);
+            // Fallback: release immediately
+            release_card_immediately(card_id);
+        }
+    } else {
+        log_message(log_module, MSG_INFO, "Step 8: Card %d still has clients, keeping in use", card_id);
+    }
+}
+
+/**
+ * @brief Background thread function to hold card for 6 seconds before releasing
+ * @param arg Pointer to card_hold_data structure
+ * @return NULL
+ */
+void *hold_card_for_6_seconds(void *arg)
+{
+    struct card_hold_data *hold_data = (struct card_hold_data *)arg;
+    int card_id = hold_data->card_id;
+    double frequency = hold_data->frequency;
+    
+    log_message(log_module, MSG_INFO, "Hold thread: Card %d on frequency %.0f Hz - waiting 6 seconds", 
+               card_id, frequency);
+    
+    // Wait for 6 seconds
+    sleep(6);
+    
+    // Check if card still has no clients (double-check)
+    if (can_release_card(card_id)) {
+        log_message(log_module, MSG_INFO, "Hold thread: 6 seconds elapsed, releasing card %d back to available pool", card_id);
+        release_card_immediately(card_id);
+    } else {
+        log_message(log_module, MSG_INFO, "Hold thread: Card %d acquired new clients during hold period, keeping in use", card_id);
+    }
+    
+    free(hold_data);
+    return NULL;
+}
+
+/**
+ * @brief Immediately release a card back to the available pool
+ * @param card_id Card ID to release
+ */
+void release_card_immediately(int card_id)
+{
+    log_message(log_module, MSG_INFO, "Releasing card %d back to available pool", card_id);
+    
+    unregister_card_usage(card_id, "unicast_client");
+    
+    // Mark card as available for other frequencies
+    if (global_unified_system) {
+        for (int i = 0; i < global_unified_system->num_cards; i++) {
+            if (global_unified_system->cards[i].card_id == card_id) {
+                global_unified_system->cards[i].in_use = 0;
+                global_unified_system->cards[i].current_freq = 0.0;
+                break;
+            }
+        }
+    }
+}
+
 /**
  * @brief Get unified enhanced channel data for HTTP operations (preserves frequency/card info)
  * @param channels Output enhanced channel array
  * @param number_of_channels Output number of channels
  * @return 0 on success, -1 on error
  */
-static int get_unified_enhanced_channel_data(enhanced_channel_t **channels, int *number_of_channels)
+int get_unified_enhanced_channel_data(enhanced_channel_t **channels, int *number_of_channels)
 {
     if (!channels || !number_of_channels) {
         return -1;
@@ -960,50 +1200,27 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 							double frequency = target_enhanced_channel->frequency;
 							int card_id = target_enhanced_channel->card_id;
 							
+							log_message( log_module, MSG_DEBUG,"Channel %d (%s) - frequency: %.0f Hz, card_id: %d\n", 
+									   requested_channel, target_enhanced_channel->base_channel.name, frequency, card_id);
+							
 							if (frequency > 0) {
-								// First, check if any card is already tuned to this frequency and serving clients
-								int existing_card_id = -1;
-								if (global_unified_system) {
-									for (int i = 0; i < global_unified_system->num_cards; i++) {
-										if (global_unified_system->cards[i].current_freq == frequency &&
-											global_unified_system->cards[i].in_use) {
-											existing_card_id = global_unified_system->cards[i].card_id;
-											log_message( log_module, MSG_INFO,"Channel %d (%s) routing to existing card %d on frequency %.0f Hz (original card: %d)\n", 
-													   requested_channel, target_enhanced_channel->base_channel.name, existing_card_id, frequency, card_id);
-											break;
-										}
-									}
-								}
-								
-								// If no card is serving this frequency, use the original card
-								if (existing_card_id == -1) {
-									// Use the original card from the enhanced channel data
-									if (card_id >= 0) {
-										// Bootstrap the card (tune it and load TS data) for this frequency
-										if (bootstrap_card_for_frequency(card_id, frequency) == 0) {
-											log_message( log_module, MSG_INFO,"Channel %d (%s) bootstrapped on card %d for frequency %.0f Hz (original card: %d)\n", 
-													   requested_channel, target_enhanced_channel->base_channel.name, card_id, frequency, card_id);
-											existing_card_id = card_id;
-										} else {
-											log_message( log_module, MSG_ERROR,"Failed to bootstrap card %d for channel %d frequency %.0f Hz\n", card_id, requested_channel, frequency);
-											err404=1;
-											requested_channel=0;
-										}
-									} else {
-										log_message( log_module, MSG_ERROR,"No card available for channel %d frequency %.0f Hz\n", requested_channel, frequency);
-										err404=1;
-										requested_channel=0;
-									}
-								}
-								
-								// If we have a card (either existing or newly tuned), proceed with client addition
-								if (existing_card_id >= 0) {
+								// Use the complete 8-step channel-to-card assignment flow
+								int assigned_card_id = -1;
+								if (assign_channel_to_card_complete_flow(requested_channel, target_enhanced_channel, &assigned_card_id) == 0) {
+									log_message( log_module, MSG_INFO,"Channel %d (%s) successfully assigned to card %d for frequency %.0f Hz\n", 
+											   requested_channel, target_enhanced_channel->base_channel.name, assigned_card_id, frequency);
+									
+									// If we have a card, proceed with client addition
 									// Convert enhanced channel to regular channel for client addition
 									// We need to ensure the regular channels array has this channel
 									if (requested_channel > 0) {
-									// No need to copy to regular channels array - we use unified storage v2 directly
-									log_message( log_module, MSG_DEBUG,"Using enhanced channel %d data directly from unified storage v2\n", requested_channel);
-								}
+										// No need to copy to regular channels array - we use unified storage v2 directly
+										log_message( log_module, MSG_DEBUG,"Using enhanced channel %d data directly from unified storage v2\n", requested_channel);
+									}
+								} else {
+									log_message( log_module, MSG_ERROR,"Failed to assign channel %d to any card\n", requested_channel);
+									err404=1;
+									requested_channel=0;
 								}
 							} else {
 								log_message( log_module, MSG_ERROR,"Channel %d has invalid frequency %.0f Hz\n", requested_channel, frequency);

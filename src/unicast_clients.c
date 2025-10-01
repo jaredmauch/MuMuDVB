@@ -217,6 +217,30 @@ int unicast_del_client(unicast_parameters_t *unicast_vars, unicast_client_t *cli
 	if(client->chan_ptr!=NULL)
 	{
 		log_message( log_module, MSG_DEBUG,"We remove the client from the channel \"%s\"\n",client->chan_ptr->name);
+		
+		// Step 8: Cleanup card usage when client disconnects
+		// We need to find the card and frequency for this channel
+		// This is a simplified approach - in a full implementation, we'd store this info in the client
+		extern unified_channel_system_t *global_unified_system;
+		if (global_unified_system) {
+			// Try to find the channel in the unified system to get frequency info
+			enhanced_channel_t *enhanced_channels = NULL;
+			int enhanced_number_of_channels = 0;
+			
+			if (get_unified_enhanced_channel_data(&enhanced_channels, &enhanced_number_of_channels) == 0) {
+				for (int i = 0; i < enhanced_number_of_channels; i++) {
+					if (strcmp(enhanced_channels[i].base_channel.name, client->chan_ptr->name) == 0) {
+						// Found the channel - cleanup card usage
+						cleanup_card_on_client_disconnect(-1, enhanced_channels[i].frequency, 
+														client->chan_ptr->name, 
+														enhanced_channels[i].base_channel.service_id);
+						break;
+					}
+				}
+				free(enhanced_channels);
+			}
+		}
+		
 		// decrement the number of client connections
         client->chan_ptr->num_clients--;
 
