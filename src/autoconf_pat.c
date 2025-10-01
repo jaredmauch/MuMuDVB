@@ -119,6 +119,14 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 		//We mark previously existing autodetected channels for cleanup after all PAT parsing
 		//this flag will be set to READY if we see the channel again in this new PAT, otherwise it means the channel went down
 		//See the end of this function for more details
+		
+		// Safety check: ensure number_of_channels is valid
+		if (chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
+			log_message( log_module, MSG_ERROR,"Card %d Invalid number_of_channels: %d (max: %d), skipping channel cleanup\n", 
+						card_id, chan_p->number_of_channels, MAX_CHANNELS);
+			chan_p->number_of_channels = 0; // Reset to safe value
+		}
+		
 		for(i=0;i<chan_p->number_of_channels && i< MAX_CHANNELS;i++)
 		{
 			if(chan_p->channels[i].channel_ready==READY && MU_F(chan_p->channels[i].service_id)==F_DETECTED)
@@ -186,6 +194,14 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 		log_message( log_module, MSG_DEBUG,"It seems that we have finished to get the channel/services list");
 		//We say we have seen all PAT to update SDT
 		//we see the channel which were READY_EXISTING and which are not READY meaning that they were not updated
+		
+		// Safety check: ensure number_of_channels is valid
+		if (chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
+			log_message( log_module, MSG_ERROR,"Card %d Invalid number_of_channels in cleanup: %d (max: %d), skipping\n", 
+						card_id, chan_p->number_of_channels, MAX_CHANNELS);
+			chan_p->number_of_channels = 0; // Reset to safe value
+		}
+		
 		for(i=0;i<chan_p->number_of_channels && i< MAX_CHANNELS;i++)
 		{
 			if(chan_p->channels[i].channel_ready==READY_EXISTING)
@@ -224,6 +240,14 @@ int autoconf_pat_update_chan(pat_prog_t  *prog,int pat_version,mumu_chan_p_t *ch
 	int i;
 	int chan_num=-1;
 	//we search if a channel already have the service_id
+
+	// Safety check: ensure number_of_channels is valid
+	if (chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
+		log_message( log_module, MSG_ERROR,"Invalid number_of_channels in update_chan: %d (max: %d), skipping\n", 
+					chan_p->number_of_channels, MAX_CHANNELS);
+		chan_p->number_of_channels = 0; // Reset to safe value
+		return -1;
+	}
 
 	for(i=0;i<chan_p->number_of_channels && i< MAX_CHANNELS;i++)
 	{
