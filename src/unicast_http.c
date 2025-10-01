@@ -1088,6 +1088,39 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
                     }
 				}
 			}
+			//Channel names list
+			//GET /byname/
+			else if(strstr(client->buffer +pos ,"/byname/ ")==(client->buffer +pos))
+			{
+				log_message( log_module, MSG_DETAIL,"Channel names list\n");
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				if (global_unified_system && global_unified_system->unified_storage_v2 &&
+				    get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+				    num_enhanced_channels > 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for channel names list", num_unified_channels);
+						unicast_send_channel_names_list(num_unified_channels, unified_base_channels, client->Socket);
+						free(unified_base_channels);
+						free(enhanced_channels);
+						return -2;
+					}
+					free(enhanced_channels);
+				}
+				
+				// Fallback to regular channels
+				unicast_send_channel_names_list(number_of_channels, channels, client->Socket);
+				return -2; //We close the connection afterwards
+			}
 			//Channel by card (prefix for byname and bysid)
 			//GET /bycard/card_id/byname/channelname or /bycard/card_id/bysid/sid
 			else if(strstr(client->buffer +pos ,"/bycard/")==(client->buffer +pos))
@@ -1810,19 +1843,74 @@ unicast_send_streamed_channels_list (int number_of_channels, mumudvb_channel_t *
 		if (channels[curr_channel].channel_ready>=READY)
 		{
 			if(host)
-				unicast_reply_write(reply, "Channel number %d : %s<br>Unicast link : <a href=\"http://%s/bysid/%d\">http://%s/bysid/%d</a><br>Multicast ip : %s:%d<br><br>\r\n",
+				unicast_reply_write(reply, "Channel number %d : %s<br>Unicast links : <a href=\"http://%s/bynumber/%d\">/bynumber/%d</a> | <a href=\"http://%s/byname/%s\">/byname/%s</a><br>Multicast ip : %s:%d<br><br>\r\n",
 						curr_channel+1,
 						channels[curr_channel].name,
-						host,channels[curr_channel].service_id,
-						host,channels[curr_channel].service_id,
+						host, curr_channel+1,
+						curr_channel+1,
+						host, channels[curr_channel].name,
+						channels[curr_channel].name,
 						channels[curr_channel].ip4Out,channels[curr_channel].portOut);
 			else
-				unicast_reply_write(reply, "Channel number %d : \"%s\"<br>Multicast ip : %s:%d<br><br>\r\n",
+				unicast_reply_write(reply, "Channel number %d : \"%s\"<br>Unicast links : /bynumber/%d | /byname/%s<br>Multicast ip : %s:%d<br><br>\r\n",
+						curr_channel+1,
+						channels[curr_channel].name,
 						curr_channel+1,
 						channels[curr_channel].name,
 						channels[curr_channel].ip4Out,channels[curr_channel].portOut);
 		}
 	unicast_reply_write(reply, HTTP_CHANNELS_REPLY_END);
+
+	unicast_reply_send(reply, Socket, 200, "text/html");
+
+	if (0 != unicast_reply_free(reply)) {
+		log_message( log_module, MSG_INFO,"Error when releasing the HTTP reply after sendinf it\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+/** @brief Send a basic html file containing the list of available channel names
+ *
+ * @param number_of_channels the number of channels
+ * @param channels the channels array
+ * @param Socket the socket on wich the information have to be sent
+ */
+int
+unicast_send_channel_names_list (int number_of_channels, mumudvb_channel_t *channels, int Socket)
+{
+
+	struct unicast_reply* reply = unicast_reply_init();
+	if (NULL == reply) {
+		log_message( log_module, MSG_INFO,"Error when creating the HTTP reply\n");
+		return -1;
+	}
+
+	unicast_reply_write(reply, "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml10/DTD/xhtml10strict.dtd\">\r\n");
+	unicast_reply_write(reply, "<html lang=\"en\">\r\n");
+	unicast_reply_write(reply, "<head>\r\n");
+	unicast_reply_write(reply, "<title>Available Channel Names</title>\r\n");
+	unicast_reply_write(reply, "</head>\r\n");
+	unicast_reply_write(reply, "<body>\r\n");
+	unicast_reply_write(reply, "   <h1>Available Channel Names</h1>\r\n");
+	unicast_reply_write(reply, "<hr />\r\n");
+	unicast_reply_write(reply, "This is the list of available channel names for streaming.\r\n");
+	unicast_reply_write(reply, "<hr />\r\n");
+
+	for (int curr_channel = 0; curr_channel < number_of_channels; curr_channel++)
+		if (channels[curr_channel].channel_ready>=READY)
+		{
+			unicast_reply_write(reply, "Channel name: <a href=\"/byname/%s\">%s</a><br>\r\n",
+						channels[curr_channel].name,
+						channels[curr_channel].name);
+		}
+	
+	unicast_reply_write(reply, "<hr />\r\n");
+	unicast_reply_write(reply, "See <a href=\"http://mumudvb.net/\">MuMuDVB</a> website for more details.\r\n");
+	unicast_reply_write(reply, "</body>\r\n");
+	unicast_reply_write(reply, "</html>\r\n");
+	unicast_reply_write(reply, "\r\n");
 
 	unicast_reply_send(reply, Socket, 200, "text/html");
 
@@ -1988,11 +2076,12 @@ unicast_send_index_page (int Socket)
 
 
 	unicast_reply_write(reply, "<br>Channels by number : /bynumber/[channel number]<br><br>\r\n");
-	unicast_reply_write(reply, "<br>Channels by service identifier : /bysid/[channel sid]<br><br>\r\n");
-	unicast_reply_write(reply, "<br>Channels by number : /byname/[channel name]<br><br>\r\n");
+	unicast_reply_write(reply, "<br>Channels by name : /byname/[channel name]<br><br>\r\n");
+	unicast_reply_write(reply, "<br>Note: /bysid/ links are not shown in the channel list due to potential SID overlap in unified mode<br><br>\r\n");
 
 
 	unicast_reply_write(reply, "<br>  <a href=\"/channels_list.html\">Channels list</a><br><br>\r\n");
+	unicast_reply_write(reply, "<br>  <a href=\"/byname/\">Available channel names</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br>  <a href=\"/playlist.m3u\">Playlist (m3u)</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br>  <a href=\"/playlist_port.m3u\">Playlist by port(m3u)</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br>  <a href=\"/playlist_multicast.m3u\">Playlist multicast (m3u)</a><br><br>\r\n");
@@ -2393,3 +2482,4 @@ int unicast_send_tuner_scan_results(int Socket)
 	unicast_reply_free(reply);
 	return 0;
 }
+
