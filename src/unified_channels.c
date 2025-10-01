@@ -1415,8 +1415,8 @@ static int has_clients_on_frequency(int card_id, double frequency)
 }
 
 // Update client count for a specific card/frequency/channel combination
-static void update_channel_client_count(int card_id, double frequency, const char *channel_name, 
-                                       int service_id, int client_count)
+void update_channel_client_count(int card_id, double frequency, const char *channel_name, 
+                                int service_id, int client_count)
 {
     pthread_mutex_lock(&utilization_global_mutex);
     
@@ -1453,7 +1453,7 @@ static void update_channel_client_count(int card_id, double frequency, const cha
 }
 
 // Check if a card can be released (no clients on any frequency)
-static int can_release_card(int card_id)
+int can_release_card(int card_id)
 {
     pthread_mutex_lock(&utilization_global_mutex);
     

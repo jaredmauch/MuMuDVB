@@ -742,6 +742,11 @@ int assign_card_to_frequency(unified_channel_system_t *unified_system, double fr
 int build_channel_list_for_frequency(unified_card_t *card, double frequency, int fd_frontend);
 int get_available_card_for_frequency(unified_channel_system_t *unified_system, double frequency);
 void *unified_card_thread(void *arg);
+
+// Card usage tracking functions
+void update_channel_client_count(int card_id, double frequency, const char *channel_name, 
+                                int service_id, int client_count);
+int can_release_card(int card_id);
 void *background_frequency_scanner(void *arg);
 int scan_remaining_frequencies(unified_channel_system_t *unified_system, fds_t *fds, 
                                tune_p_t *tune_p, int first_frequency_index);

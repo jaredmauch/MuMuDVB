@@ -32,6 +32,16 @@
 #include "mumudvb.h"
 #include "unicast_queue.h"
 
+// Forward declarations for the complete channel-to-card assignment flow
+int assign_channel_to_card_complete_flow(int requested_channel, 
+                                        enhanced_channel_t *target_enhanced_channel,
+                                        int *assigned_card_id);
+void cleanup_card_on_client_disconnect(int card_id, double frequency, 
+                                      const char *channel_name, int service_id);
+void *hold_card_for_6_seconds(void *arg);
+void release_card_immediately(int card_id);
+int get_unified_enhanced_channel_data(enhanced_channel_t **channels, int *number_of_channels);
+
 /** @brief The different fd/socket types */
 enum
   {
