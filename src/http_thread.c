@@ -331,8 +331,6 @@ void *http_thread_main(void *arg)
                 
                 iRet = unicast_handle_fd_event(
                     params->unicast_params,
-                    params->channels,
-                    params->number_of_channels,
                     params->strength_params,
                     params->auto_params,
                     params->cam_params,

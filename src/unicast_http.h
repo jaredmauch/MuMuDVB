@@ -222,8 +222,6 @@ int unicast_create_listening_socket(int socket_type, int socket_channel, char *i
 struct strength_parameters_t; //just to avoid including dvb.h for one structure
 struct eit_packet_t; //just to avoid including rewrite.h for one structure
 int unicast_handle_fd_event(unicast_parameters_t *unicast_vars,
-		mumudvb_channel_t *channels,
-		int number_of_channels,
 		struct strength_parameters_t *strengthparams,
 		struct auto_p_t *auto_p,
 		void *cam_vars,
