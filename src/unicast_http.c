@@ -153,7 +153,33 @@ static int get_unified_channel_data(mumudvb_channel_t **channels, int *number_of
 }
 
 /**
- * @brief Find channel by number in the unified channel data
+ * @brief Find enhanced channel by number in the unified channel data
+ * @param channel_number 1-based channel number
+ * @param channels Enhanced channel array
+ * @param number_of_channels Number of channels
+ * @return Pointer to enhanced channel if found and ready, NULL otherwise
+ */
+static enhanced_channel_t *find_enhanced_channel_by_number(int channel_number, 
+                                                          enhanced_channel_t *channels, 
+                                                          int number_of_channels)
+{
+    if (!channels || channel_number <= 0 || channel_number > number_of_channels) {
+        return NULL;
+    }
+    
+    // Convert to 0-based index
+    int channel_index = channel_number - 1;
+    
+    // Check if channel is ready
+    if (channels[channel_index].base_channel.channel_ready >= READY) {
+        return &channels[channel_index];
+    }
+    
+    return NULL;
+}
+
+/**
+ * @brief Find channel by number in the unified channel data (legacy)
  * @param channel_number 1-based channel number
  * @param channels Channel array
  * @param number_of_channels Number of channels
@@ -173,6 +199,60 @@ static mumudvb_channel_t *find_channel_by_number(int channel_number,
     // Check if channel is ready
     if (channels[channel_index].channel_ready >= READY) {
         return &channels[channel_index];
+    }
+    
+    return NULL;
+}
+
+/**
+ * @brief Find enhanced channel by name with whitespace handling
+ * @param channel_name Channel name to find
+ * @param channels Enhanced channel array
+ * @param number_of_channels Number of channels
+ * @return Pointer to enhanced channel if found and ready, NULL otherwise
+ */
+static enhanced_channel_t *find_enhanced_channel_by_name(const char *channel_name, 
+                                                         enhanced_channel_t *channels, 
+                                                         int number_of_channels)
+{
+    if (!channels || !channel_name) {
+        return NULL;
+    }
+    
+    // Create a working copy of the requested name and trim whitespace
+    char requested_name[MAX_NAME_LEN];
+    strncpy(requested_name, channel_name, MAX_NAME_LEN - 1);
+    requested_name[MAX_NAME_LEN - 1] = '\0';
+    
+    // Trim trailing whitespace from requested name
+    char *end = requested_name + strlen(requested_name) - 1;
+    while (end > requested_name && isspace((unsigned char)*end)) {
+        end--;
+    }
+    end[1] = '\0';
+    
+    // Search through channels
+    for (int i = 0; i < number_of_channels; i++) {
+        if (channels[i].base_channel.channel_ready >= READY) {
+            // Create a working copy of the channel name and trim whitespace
+            char current_name[MAX_NAME_LEN];
+            strncpy(current_name, channels[i].base_channel.name, MAX_NAME_LEN - 1);
+            current_name[MAX_NAME_LEN - 1] = '\0';
+            
+            // Trim trailing whitespace from channel name
+            end = current_name + strlen(current_name) - 1;
+            while (end > current_name && isspace((unsigned char)*end)) {
+                end--;
+            }
+            end[1] = '\0';
+            
+            // Compare trimmed names
+            if (strcasecmp(current_name, requested_name) == 0) {
+                log_message(log_module, MSG_DEBUG, "Found channel by name: '%s' -> '%s' (index %d)", 
+                           channel_name, current_name, i);
+                return &channels[i];
+            }
+        }
     }
     
     return NULL;
@@ -1090,30 +1170,32 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 				{
 					requested_channel=atoi(substring);
 					
-					// Use unified channel data for validation (same as web interface)
-					mumudvb_channel_t *unified_channels = NULL;
-					int unified_number_of_channels = 0;
-					mumudvb_channel_t *target_channel = NULL;
+					// Use enhanced channel data for validation (preserves frequency/card info)
+					enhanced_channel_t *enhanced_channels = NULL;
+					int enhanced_number_of_channels = 0;
+					enhanced_channel_t *target_enhanced_channel = NULL;
 					
-					// Try to get unified channel data first
-					if (get_unified_channel_data(&unified_channels, &unified_number_of_channels) == 0) {
-						// Use unified channel data
-						target_channel = find_channel_by_number(requested_channel, unified_channels, unified_number_of_channels);
-						if (target_channel) {
+					// Try to get enhanced channel data first
+					if (get_unified_enhanced_channel_data(&enhanced_channels, &enhanced_number_of_channels) == 0) {
+						// Use enhanced channel data
+						target_enhanced_channel = find_enhanced_channel_by_number(requested_channel, enhanced_channels, enhanced_number_of_channels);
+						if (target_enhanced_channel) {
 							log_message( log_module, MSG_DEBUG,"Channel by number, number %d found in unified storage\n",requested_channel);
 							
-							// Get frequency for this channel
-							double frequency = get_channel_frequency(target_channel);
+							// Get frequency and card info directly from enhanced channel
+							double frequency = target_enhanced_channel->frequency;
+							int card_id = target_enhanced_channel->card_id;
+							
 							if (frequency > 0) {
 								// Find available card for this frequency
-								int card_id = find_available_card_for_frequency(frequency, -1);
-								if (card_id >= 0) {
+								int available_card_id = find_available_card_for_frequency(frequency, -1);
+								if (available_card_id >= 0) {
 									// Reserve the card for this frequency
-									if (reserve_card_for_frequency(card_id, frequency) == 0) {
-										log_message( log_module, MSG_INFO,"Channel %d (%s) assigned to card %d on frequency %.0f Hz\n", 
-												   requested_channel, target_channel->name, card_id, frequency);
+									if (reserve_card_for_frequency(available_card_id, frequency) == 0) {
+										log_message( log_module, MSG_INFO,"Channel %d (%s) assigned to card %d on frequency %.0f Hz (original card: %d)\n", 
+												   requested_channel, target_enhanced_channel->base_channel.name, available_card_id, frequency, card_id);
 									} else {
-										log_message( log_module, MSG_ERROR,"Failed to reserve card %d for channel %d\n", card_id, requested_channel);
+										log_message( log_module, MSG_ERROR,"Failed to reserve card %d for channel %d\n", available_card_id, requested_channel);
 										err404=1;
 										requested_channel=0;
 									}
@@ -1123,7 +1205,7 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 									requested_channel=0;
 								}
 							} else {
-								log_message( log_module, MSG_ERROR,"Could not determine frequency for channel %d\n", requested_channel);
+								log_message( log_module, MSG_ERROR,"Channel %d has invalid frequency %.0f Hz\n", requested_channel, frequency);
 								err404=1;
 								requested_channel=0;
 							}
@@ -1132,9 +1214,9 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 							err404=1;
 							requested_channel=0;
 						}
-						// Free unified channels if we allocated them
-						if (unified_channels) {
-							free(unified_channels);
+						// Free enhanced channels if we allocated them
+						if (enhanced_channels) {
+							free(enhanced_channels);
 						}
 					} else {
 						// Fallback to regular channel validation
