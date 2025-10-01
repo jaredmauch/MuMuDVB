@@ -1461,13 +1461,49 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
                     requested_channel_name[MAX_NAME_LEN-1] = '\0';
                     process_channel_name(requested_channel_name);
 
-                    for(int current_channel=0; current_channel<number_of_channels;current_channel++)
-                    {
-                        strcpy(current_channel_name, channels[current_channel].name);
-                        process_channel_name(current_channel_name);
+                    // Try to get channels from unified storage v2 first, fallback to regular channels
+                    enhanced_channel_t *enhanced_channels = NULL;
+                    int num_enhanced_channels = 0;
+                    mumudvb_channel_t *unified_base_channels = NULL;
+                    int num_unified_channels = 0;
+                    
+                    // Check if we have a unified system with storage v2
+                    if (global_unified_system && global_unified_system->unified_storage_v2 &&
+                        get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+                        num_enhanced_channels > 0) {
+                        
+                        // Convert enhanced channels to base channels for HTTP endpoint
+                        if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+                                                             &unified_base_channels, &num_unified_channels) == 0) {
+                            log_message(log_module, MSG_DEBUG, "Using %d channels from unified storage v2 for byname lookup", num_unified_channels);
+                            
+                            // Search in unified channels
+                            for(int current_channel=0; current_channel<num_unified_channels;current_channel++)
+                            {
+                                strcpy(current_channel_name, unified_base_channels[current_channel].name);
+                                process_channel_name(current_channel_name);
 
-                        if(strcasecmp(current_channel_name, requested_channel_name) == 0)
-                            requested_channel=current_channel+1;
+                                if(strcasecmp(current_channel_name, requested_channel_name) == 0)
+                                    requested_channel=current_channel+1;
+                            }
+                            
+                            free(unified_base_channels);
+                            free(enhanced_channels);
+                        } else {
+                            free(enhanced_channels);
+                        }
+                    }
+                    
+                    // Fallback to regular channels if unified storage failed
+                    if (requested_channel == 0) {
+                        for(int current_channel=0; current_channel<number_of_channels;current_channel++)
+                        {
+                            strcpy(current_channel_name, channels[current_channel].name);
+                            process_channel_name(current_channel_name);
+
+                            if(strcasecmp(current_channel_name, requested_channel_name) == 0)
+                                requested_channel=current_channel+1;
+                        }
                     }
                     if(requested_channel)
                         log_message( log_module, MSG_DEBUG,"Channel by name, name `%s` number `%d`\n", requested_channel_name, requested_channel);
