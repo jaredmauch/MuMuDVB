@@ -786,17 +786,10 @@ static int test_card_frequency_parallel(int card_id, double frequency, card_freq
     
     log_message(log_module, MSG_INFO, "card-%d successfully opened frontend (fd=%d)", card_id, fd_frontend);
     
-    // Register card usage before tuning (check if already registered to avoid double registration)
-    if (!is_card_in_use(card_id)) {
-        register_card_usage(card_id, frequency, "parallel_system_tuning");
-        log_message(log_module, MSG_INFO, "card-%d registered for parallel system tuning", card_id);
-    } else {
-        log_message(log_module, MSG_DEBUG, "card-%d already registered, skipping registration", card_id);
-    }
-    
-    // Check if card is now marked as in use
-    int card_in_use_after_register = is_card_in_use(card_id);
-    log_message(log_module, MSG_INFO, "card-%d is_card_in_use() after register: %d", card_id, card_in_use_after_register);
+    // Card usage is now registered at thread level, no need to register here
+    // Just verify the card is available for this specific frequency test
+    int card_in_use_check = is_card_in_use(card_id);
+    log_message(log_module, MSG_DEBUG, "card-%d is_card_in_use() check: %d", card_id, card_in_use_check);
     
     // Attempt to tune using non-blocking approach (bypass tune_it() blocking loop)
     log_message(log_module, MSG_INFO, "card-%d attempting to tune to frequency %.1f MHz...", 
@@ -811,7 +804,6 @@ static int test_card_frequency_parallel(int card_id, double frequency, card_freq
     if (!card_mutex) {
         log_message(log_module, MSG_ERROR, "card-%d failed to get card mutex", card_id);
         close(fd_frontend);
-        unregister_card_usage(card_id, "parallel_system_tuning");
         result->status = 0;
         result->error_code = -1;
         strcpy(result->error_message, "Failed to get card mutex");
@@ -830,7 +822,6 @@ static int test_card_frequency_parallel(int card_id, double frequency, card_freq
         log_message(log_module, MSG_ERROR, "card-%d FE_GET_INFO failed: %s (errno=%d)", card_id, strerror(errno), errno);
         pthread_mutex_unlock(card_mutex);
         close(fd_frontend);
-        unregister_card_usage(card_id, "parallel_system_tuning");
         result->status = 0;
         result->error_code = errno;
         snprintf(result->error_message, sizeof(result->error_message), "Cannot get frontend info: %s", strerror(errno));
@@ -859,7 +850,6 @@ static int test_card_frequency_parallel(int card_id, double frequency, card_freq
             log_message(log_module, MSG_INFO, "card-%d tuning interrupted by signal", card_id);
             pthread_mutex_unlock(card_mutex);
             close(fd_frontend);
-            unregister_card_usage(card_id, "parallel_system_tuning");
             result->status = 0; // Failed
             result->error_code = -3;
             strcpy(result->error_message, "Interrupted during event queue clearing");
@@ -882,7 +872,6 @@ static int test_card_frequency_parallel(int card_id, double frequency, card_freq
         log_message(log_module, MSG_INFO, "card-%d interrupted before tuning, skipping", card_id);
         pthread_mutex_unlock(card_mutex);
         close(fd_frontend);
-        unregister_card_usage(card_id, "parallel_system_tuning");
         if (!is_initial_scan) {
             release_parallel_card_from_frequency(card_id, frequency);
         }
@@ -933,8 +922,6 @@ static int test_card_frequency_parallel(int card_id, double frequency, card_freq
         log_message(log_module, MSG_INFO, "card-%d tune_it() failed with error code %d", card_id, tune_result);
         pthread_mutex_unlock(card_mutex);
         close(fd_frontend);
-        // Unregister card usage
-        unregister_card_usage(card_id, "parallel_system_tuning");
         // Release the card since tuning failed (only if it was assigned)
         if (!is_initial_scan) {
             release_parallel_card_from_frequency(card_id, frequency);
@@ -956,8 +943,6 @@ static int test_card_frequency_parallel(int card_id, double frequency, card_freq
                         card_id, frequency/1000000.0);
             pthread_mutex_unlock(card_mutex);
             close(fd_frontend);
-            // Unregister card usage
-            unregister_card_usage(card_id, "parallel_system_tuning");
             // Release the card since tuning failed (only if it was assigned)
             if (!is_initial_scan) {
                 release_parallel_card_from_frequency(card_id, frequency);
@@ -972,8 +957,6 @@ static int test_card_frequency_parallel(int card_id, double frequency, card_freq
         log_message(log_module, MSG_ERROR, "card-%d cannot read final frontend status (errno: %d)", card_id, errno);
         pthread_mutex_unlock(card_mutex);
         close(fd_frontend);
-        // Unregister card usage
-        unregister_card_usage(card_id, "parallel_system_tuning");
         // Release the card since tuning failed (only if it was assigned)
         if (!is_initial_scan) {
             release_parallel_card_from_frequency(card_id, frequency);
@@ -1222,7 +1205,6 @@ signal_quality:
         log_message(log_module, MSG_ERROR, "card-%d channel collection failed", card_id);
         pthread_mutex_unlock(card_mutex);
         close(fd_frontend);
-        unregister_card_usage(card_id, "parallel_system_tuning");
         result->status = 0; // Failed
         result->error_code = -7;
         strcpy(result->error_message, "Channel collection failed");
@@ -1240,9 +1222,7 @@ signal_quality:
     log_message(log_module, MSG_DEBUG, "card-%d released card mutex", card_id);
     close(fd_frontend);
     
-    // Unregister card usage
-    unregister_card_usage(card_id, "parallel_system_tuning");
-    
+    // Card usage is now managed at thread level, no need to unregister here
     // Release the card after testing is complete (only if it was assigned)
     if (!is_initial_scan) {
         release_parallel_card_from_frequency(card_id, frequency);
@@ -1361,6 +1341,10 @@ void *card_worker_thread(void *arg)
     unified_channel_system_t *unified_system = global_parallel_manager->unified_system;
     
     log_message(log_module, MSG_INFO, "card-%d worker thread started", card_id);
+    
+    // Register card usage for the entire thread duration
+    register_card_usage(card_id, 0.0, "parallel_system_tuning");
+    log_message(log_module, MSG_INFO, "card-%d registered for parallel system tuning (thread start)", card_id);
     
     // Test all frequencies for this card and maintain availability
     for (int freq_idx = 0; freq_idx < unified_system->num_frequencies; freq_idx++) {
