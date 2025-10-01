@@ -3014,205 +3014,104 @@ int unicast_send_card_status(int Socket)
 	unicast_reply_write(reply, "<h1>MuMuDVB Card Status</h1>");
 	unicast_reply_write(reply, "<p>Real-time card utilization and status monitoring</p>");
 	
-	// Get card utilization data
-	char json_buffer[8192];
-	int json_length = generate_card_utilization_json(json_buffer, sizeof(json_buffer));
+	// Create HTML table directly without JSON parsing to avoid crashes
+	unicast_reply_write(reply, "<table>");
+	unicast_reply_write(reply, "<tr>");
+	unicast_reply_write(reply, "<th>Card ID</th>");
+	unicast_reply_write(reply, "<th>Status</th>");
+	unicast_reply_write(reply, "<th>Usage Type</th>");
+	unicast_reply_write(reply, "<th>Frequency</th>");
+	unicast_reply_write(reply, "<th>Clients</th>");
+	unicast_reply_write(reply, "<th>Tuning</th>");
+	unicast_reply_write(reply, "<th>Streaming</th>");
+	unicast_reply_write(reply, "<th>Last Activity</th>");
+	unicast_reply_write(reply, "<th>Duration</th>");
+	unicast_reply_write(reply, "</tr>");
 	
-	if (json_length <= 0) {
-		unicast_reply_write(reply, "<div style=\"background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 10px; margin: 10px 0; border-radius: 5px;\">");
-		unicast_reply_write(reply, "<h4>⚠️ Error</h4>");
-		unicast_reply_write(reply, "<p>Failed to generate card utilization data. This might indicate:</p>");
+	// Get card utilization data directly from the global system
+	extern unified_channel_system_t *global_unified_system;
+	int card_count = 0;
+	
+	// Add null pointer and bounds checking
+	if (global_unified_system && global_unified_system->num_cards > 0 && global_unified_system->cards) {
+		int max_cards = (global_unified_system->num_cards < 16) ? global_unified_system->num_cards : 16;
+		
+		for (int i = 0; i < max_cards; i++) {
+			unified_card_t *card = &global_unified_system->cards[i];
+			if (!card) continue; // Skip null cards
+			
+			card_count++;
+			
+			// Determine status based on card properties
+			const char *status_text = "Unknown";
+			const char *status_class = "unknown";
+			const char *indicator_class = "gray";
+			const char *usage_type = "unknown";
+			int is_tuning = 0;
+			int is_streaming = 0;
+			int total_clients = 0;
+			
+			// Check if card is in use (with error handling)
+			int card_in_use = 0;
+			if (card->card_id >= 0) {
+				card_in_use = is_card_in_use(card->card_id);
+			}
+			
+			if (card_in_use) {
+				status_text = "In Use";
+				status_class = "busy";
+				indicator_class = "red";
+				usage_type = "active";
+				is_tuning = 1; // Assume tuning if in use
+			} else if (card->in_use) {
+				status_text = "Reserved";
+				status_class = "tuning";
+				indicator_class = "yellow";
+				usage_type = "reserved";
+				is_tuning = 1;
+			} else {
+				status_text = "Available";
+				status_class = "available";
+				indicator_class = "green";
+				usage_type = "idle";
+			}
+			
+			// Format time (simplified since last_used field doesn't exist)
+			char time_str[64] = "Unknown";
+			
+			// Safe frequency formatting
+			double freq_mhz = 0.0;
+			if (card->current_freq > 0) {
+				freq_mhz = card->current_freq / 1000000.0;
+			}
+			
+			// Add table row with error checking
+			unicast_reply_write(reply, "<tr class=\"%s\">", status_class);
+			unicast_reply_write(reply, "<td><strong>%d</strong></td>", card->card_id);
+			unicast_reply_write(reply, "<td><span class=\"status-indicator %s\"></span>%s</td>", indicator_class, status_text);
+			unicast_reply_write(reply, "<td>%s</td>", usage_type);
+			unicast_reply_write(reply, "<td>%.1f MHz</td>", freq_mhz);
+			unicast_reply_write(reply, "<td>%d</td>", total_clients);
+			unicast_reply_write(reply, "<td>%s</td>", is_tuning ? "Yes" : "No");
+			unicast_reply_write(reply, "<td>%s</td>", is_streaming ? "Yes" : "No");
+			unicast_reply_write(reply, "<td>%s</td>", time_str);
+			unicast_reply_write(reply, "<td>-</td>"); // Duration not available in this simple view
+			unicast_reply_write(reply, "</tr>");
+		}
+	}
+	
+	unicast_reply_write(reply, "</table>");
+	
+	if (card_count == 0) {
+		unicast_reply_write(reply, "<div style=\"background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin: 10px 0; border-radius: 5px;\">");
+		unicast_reply_write(reply, "<h4>ℹ️ No Cards Found</h4>");
+		unicast_reply_write(reply, "<p>No cards are currently available in the unified system. This might indicate:</p>");
 		unicast_reply_write(reply, "<ul>");
-		unicast_reply_write(reply, "<li>Card utilization tracking is not initialized</li>");
-		unicast_reply_write(reply, "<li>No cards are currently registered in the system</li>");
-		unicast_reply_write(reply, "<li>There's an internal error in the card tracking system</li>");
+		unicast_reply_write(reply, "<li>The system is still initializing</li>");
+		unicast_reply_write(reply, "<li>No cards have been detected</li>");
+		unicast_reply_write(reply, "<li>There's an issue with card detection</li>");
 		unicast_reply_write(reply, "</ul>");
 		unicast_reply_write(reply, "</div>");
-	} else {
-		// Parse JSON and create HTML table
-		unicast_reply_write(reply, "<table>");
-		unicast_reply_write(reply, "<tr>");
-		unicast_reply_write(reply, "<th>Card ID</th>");
-		unicast_reply_write(reply, "<th>Status</th>");
-		unicast_reply_write(reply, "<th>Usage Type</th>");
-		unicast_reply_write(reply, "<th>Frequency</th>");
-		unicast_reply_write(reply, "<th>Clients</th>");
-		unicast_reply_write(reply, "<th>Tuning</th>");
-		unicast_reply_write(reply, "<th>Streaming</th>");
-		unicast_reply_write(reply, "<th>Last Activity</th>");
-		unicast_reply_write(reply, "<th>Duration</th>");
-		unicast_reply_write(reply, "</tr>");
-		
-		// Simple JSON parsing for card utilization
-		char *pos = json_buffer;
-		int card_count = 0;
-		
-		// Find the card_utilization array
-		char *array_start = strstr(pos, "\"card_utilization\": [");
-		if (array_start) {
-			pos = array_start + strlen("\"card_utilization\": [");
-			
-			while (*pos && *pos != ']') {
-				// Skip whitespace and commas
-				while (*pos && (*pos == ' ' || *pos == '\n' || *pos == '\r' || *pos == '\t' || *pos == ',')) pos++;
-				if (*pos == ']') break;
-				
-				// Look for card object
-				if (*pos == '{') {
-					card_count++;
-					
-					// Parse card data
-					int card_id = -1;
-					char usage_type[32] = "unknown";
-					double frequency = 0.0;
-					int total_clients = 0;
-					int is_tuning = 0;
-					int is_streaming = 0;
-					long last_activity = 0;
-					long tuning_duration = 0;
-					long streaming_duration = 0;
-					
-					// Simple field extraction
-					char *field_start = strstr(pos, "\"card_id\":");
-					if (field_start) {
-						sscanf(field_start, "\"card_id\": %d", &card_id);
-					}
-					
-					field_start = strstr(pos, "\"usage_type\":");
-					if (field_start) {
-						char *quote_start = strchr(field_start, '"');
-						if (quote_start) {
-							quote_start++;
-							char *quote_end = strchr(quote_start, '"');
-							if (quote_end) {
-								int len = quote_end - quote_start;
-								if (len < sizeof(usage_type)) {
-									strncpy(usage_type, quote_start, len);
-									usage_type[len] = '\0';
-								}
-							}
-						}
-					}
-					
-					field_start = strstr(pos, "\"current_frequency\":");
-					if (field_start) {
-						sscanf(field_start, "\"current_frequency\": %lf", &frequency);
-					}
-					
-					field_start = strstr(pos, "\"total_clients\":");
-					if (field_start) {
-						sscanf(field_start, "\"total_clients\": %d", &total_clients);
-					}
-					
-					field_start = strstr(pos, "\"is_tuning\":");
-					if (field_start) {
-						sscanf(field_start, "\"is_tuning\": %d", &is_tuning);
-					}
-					
-					field_start = strstr(pos, "\"is_streaming\":");
-					if (field_start) {
-						sscanf(field_start, "\"is_streaming\": %d", &is_streaming);
-					}
-					
-					field_start = strstr(pos, "\"last_activity\":");
-					if (field_start) {
-						sscanf(field_start, "\"last_activity\": %ld", &last_activity);
-					}
-					
-					field_start = strstr(pos, "\"tuning_duration\":");
-					if (field_start) {
-						sscanf(field_start, "\"tuning_duration\": %ld", &tuning_duration);
-					}
-					
-					field_start = strstr(pos, "\"streaming_duration\":");
-					if (field_start) {
-						sscanf(field_start, "\"streaming_duration\": %ld", &streaming_duration);
-					}
-					
-					// Determine status and CSS class
-					const char *status_text = "Unknown";
-					const char *status_class = "unknown";
-					const char *indicator_class = "gray";
-					
-					if (strcmp(usage_type, "idle") == 0) {
-						status_text = "Idle";
-						status_class = "idle";
-						indicator_class = "gray";
-					} else if (is_streaming) {
-						status_text = "Streaming";
-						status_class = "streaming";
-						indicator_class = "blue";
-					} else if (is_tuning) {
-						status_text = "Tuning";
-						status_class = "tuning";
-						indicator_class = "yellow";
-					} else if (total_clients > 0) {
-						status_text = "Busy";
-						status_class = "busy";
-						indicator_class = "red";
-					} else {
-						status_text = "Available";
-						status_class = "available";
-						indicator_class = "green";
-					}
-					
-					// Format time
-					char time_str[64] = "Never";
-					if (last_activity > 0) {
-						time_t now = time(NULL);
-						long diff = now - last_activity;
-						if (diff < 60) {
-							snprintf(time_str, sizeof(time_str), "%lds ago", diff);
-						} else if (diff < 3600) {
-							snprintf(time_str, sizeof(time_str), "%ldm ago", diff / 60);
-						} else {
-							snprintf(time_str, sizeof(time_str), "%ldh ago", diff / 3600);
-						}
-					}
-					
-					// Format duration
-					char duration_str[64] = "-";
-					if (is_tuning && tuning_duration > 0) {
-						snprintf(duration_str, sizeof(duration_str), "%lds", tuning_duration);
-					} else if (is_streaming && streaming_duration > 0) {
-						snprintf(duration_str, sizeof(duration_str), "%lds", streaming_duration);
-					}
-					
-					// Add table row
-					unicast_reply_write(reply, "<tr class=\"%s\">", status_class);
-					unicast_reply_write(reply, "<td><strong>%d</strong></td>", card_id);
-					unicast_reply_write(reply, "<td><span class=\"status-indicator %s\"></span>%s</td>", indicator_class, status_text);
-					unicast_reply_write(reply, "<td>%s</td>", usage_type);
-					unicast_reply_write(reply, "<td>%.1f MHz</td>", frequency / 1000000.0);
-					unicast_reply_write(reply, "<td>%d</td>", total_clients);
-					unicast_reply_write(reply, "<td>%s</td>", is_tuning ? "Yes" : "No");
-					unicast_reply_write(reply, "<td>%s</td>", is_streaming ? "Yes" : "No");
-					unicast_reply_write(reply, "<td>%s</td>", time_str);
-					unicast_reply_write(reply, "<td>%s</td>", duration_str);
-					unicast_reply_write(reply, "</tr>");
-					
-					// Find next card object
-					pos = strchr(pos, '}');
-					if (pos) pos++;
-				} else {
-					pos++;
-				}
-			}
-		}
-		
-		unicast_reply_write(reply, "</table>");
-		
-		if (card_count == 0) {
-			unicast_reply_write(reply, "<div style=\"background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin: 10px 0; border-radius: 5px;\">");
-			unicast_reply_write(reply, "<h4>ℹ️ No Cards Found</h4>");
-			unicast_reply_write(reply, "<p>No cards are currently registered in the card utilization system. This might indicate:</p>");
-			unicast_reply_write(reply, "<ul>");
-			unicast_reply_write(reply, "<li>The system is still initializing</li>");
-			unicast_reply_write(reply, "<li>No cards have been used yet</li>");
-			unicast_reply_write(reply, "<li>There's an issue with card detection</li>");
-			unicast_reply_write(reply, "</ul>");
-			unicast_reply_write(reply, "</div>");
-		}
 	}
 	
 	unicast_reply_write(reply, "<p><a href=\"/\">Back to main page</a> | <a href=\"/tuner_scan_results.html\">Tuner Scan Results</a></p>");

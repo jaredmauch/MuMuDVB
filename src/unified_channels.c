@@ -1587,9 +1587,16 @@ int generate_card_utilization_json(char *buffer, size_t buffer_size)
 {
     int written = 0;
     time_t now = time(NULL);
+    int remaining;
     
-    written += snprintf(buffer + written, buffer_size - written, 
-                       "{\n  \"card_utilization\": [\n");
+    remaining = buffer_size - written;
+    if (remaining > 0) {
+        int result = snprintf(buffer + written, remaining, 
+                           "{\n  \"card_utilization\": [\n");
+        if (result > 0 && result < remaining) {
+            written += result;
+        }
+    }
     
     pthread_mutex_lock(&utilization_global_mutex);
     
@@ -1599,30 +1606,47 @@ int generate_card_utilization_json(char *buffer, size_t buffer_size)
             pthread_mutex_lock(&card_utilization[i].utilization_mutex);
             
             if (!first_card) {
-                written += snprintf(buffer + written, buffer_size - written, ",\n");
+                remaining = buffer_size - written;
+                if (remaining > 0) {
+                    int result = snprintf(buffer + written, remaining, ",\n");
+                    if (result > 0 && result < remaining) {
+                        written += result;
+                    }
+                }
             }
             first_card = 0;
             
-            written += snprintf(buffer + written, buffer_size - written,
-                               "    {\n"
-                               "      \"card_id\": %d,\n"
-                               "      \"frequency\": %.0f,\n"
-                               "      \"usage_type\": \"%s\",\n"
-                               "      \"is_tuning\": %s,\n"
-                               "      \"is_streaming\": %s,\n"
-                               "      \"total_clients\": %d,\n"
-                               "      \"last_activity\": %ld,\n"
-                               "      \"tuning_duration\": %ld,\n"
-                               "      \"streaming_duration\": %ld\n",
-                               card_utilization[i].card_id,
-                               card_utilization[i].current_frequency,
-                               card_utilization[i].usage_type,
-                               card_utilization[i].is_tuning ? "true" : "false",
-                               card_utilization[i].is_streaming ? "true" : "false",
-                               card_utilization[i].total_clients,
-                               card_utilization[i].last_activity,
-                               card_utilization[i].is_tuning ? (now - card_utilization[i].tuning_start_time) : 0,
-                               card_utilization[i].is_streaming ? (now - card_utilization[i].streaming_start_time) : 0);
+            remaining = buffer_size - written;
+            if (remaining > 0) {
+                int result = snprintf(buffer + written, remaining,
+                                   "    {\n"
+                                   "      \"card_id\": %d,\n"
+                                   "      \"frequency\": %.0f,\n"
+                                   "      \"usage_type\": \"%s\",\n"
+                                   "      \"is_tuning\": %s,\n"
+                                   "      \"is_streaming\": %s,\n"
+                                   "      \"total_clients\": %d,\n"
+                                   "      \"last_activity\": %ld,\n"
+                                   "      \"tuning_duration\": %ld,\n"
+                                   "      \"streaming_duration\": %ld\n"
+                                   "    }",
+                                   card_utilization[i].card_id,
+                                   card_utilization[i].current_frequency,
+                                   card_utilization[i].usage_type,
+                                   card_utilization[i].is_tuning ? "true" : "false",
+                                   card_utilization[i].is_streaming ? "true" : "false",
+                                   card_utilization[i].total_clients,
+                                   card_utilization[i].last_activity,
+                                   card_utilization[i].is_tuning ? (now - card_utilization[i].tuning_start_time) : 0,
+                                   card_utilization[i].is_streaming ? (now - card_utilization[i].streaming_start_time) : 0);
+                if (result > 0 && result < remaining) {
+                    written += result;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
             
             pthread_mutex_unlock(&card_utilization[i].utilization_mutex);
         }
@@ -1630,39 +1654,68 @@ int generate_card_utilization_json(char *buffer, size_t buffer_size)
     
     pthread_mutex_unlock(&utilization_global_mutex);
     
-    written += snprintf(buffer + written, buffer_size - written, 
-                       "\n  ],\n"
-                       "  \"channel_clients\": [\n");
+    remaining = buffer_size - written;
+    if (remaining > 0) {
+        int result = snprintf(buffer + written, remaining, 
+                           "\n  ],\n"
+                           "  \"channel_clients\": [\n");
+        if (result > 0 && result < remaining) {
+            written += result;
+        }
+    }
     
     // Add channel client information
     first_card = 1;
     for (int i = 0; i < 128; i++) {
         if (channel_clients[i].card_id >= 0) {
             if (!first_card) {
-                written += snprintf(buffer + written, buffer_size - written, ",\n");
+                remaining = buffer_size - written;
+                if (remaining > 0) {
+                    int result = snprintf(buffer + written, remaining, ",\n");
+                    if (result > 0 && result < remaining) {
+                        written += result;
+                    }
+                }
             }
             first_card = 0;
             
-            written += snprintf(buffer + written, buffer_size - written,
-                               "    {\n"
-                               "      \"card_id\": %d,\n"
-                               "      \"frequency\": %.0f,\n"
-                               "      \"channel_name\": \"%s\",\n"
-                               "      \"service_id\": %d,\n"
-                               "      \"client_count\": %d,\n"
-                               "      \"last_client_activity\": %ld\n"
-                               "    }",
-                               channel_clients[i].card_id,
-                               channel_clients[i].frequency,
-                               channel_clients[i].channel_name,
-                               channel_clients[i].service_id,
-                               channel_clients[i].client_count,
-                               channel_clients[i].last_client_activity);
+            remaining = buffer_size - written;
+            if (remaining > 0) {
+                int result = snprintf(buffer + written, remaining,
+                                   "    {\n"
+                                   "      \"card_id\": %d,\n"
+                                   "      \"frequency\": %.0f,\n"
+                                   "      \"channel_name\": \"%s\",\n"
+                                   "      \"service_id\": %d,\n"
+                                   "      \"client_count\": %d,\n"
+                                   "      \"last_client_activity\": %ld\n"
+                                   "    }",
+                                   channel_clients[i].card_id,
+                                   channel_clients[i].frequency,
+                                   channel_clients[i].channel_name,
+                                   channel_clients[i].service_id,
+                                   channel_clients[i].client_count,
+                                   channel_clients[i].last_client_activity);
+                if (result > 0 && result < remaining) {
+                    written += result;
+                } else {
+                    // Buffer overflow, stop writing
+                    break;
+                }
+            } else {
+                break;
+            }
         }
     }
     
-    written += snprintf(buffer + written, buffer_size - written, 
-                       "\n  ]\n}\n");
+    remaining = buffer_size - written;
+    if (remaining > 0) {
+        int result = snprintf(buffer + written, remaining, 
+                           "\n  ]\n}\n");
+        if (result > 0 && result < remaining) {
+            written += result;
+        }
+    }
     
     return written;
 }
