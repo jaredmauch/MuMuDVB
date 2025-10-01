@@ -112,7 +112,7 @@ mumudvb_ca_system_t* autoconf_get_ca_system(auto_p_t *auto_p, int ca_system_id)
  * @param auto_p The autoconfiguration structure, containing all we need
  * @param channel the associated channel
  */
-int autoconf_read_cat(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
+int autoconf_read_cat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 {
     mumudvb_ts_packet_t *cat_mumu;
     unsigned char *buf=NULL;
@@ -142,9 +142,9 @@ int autoconf_read_cat(auto_p_t *auto_p,mumu_chan_p_t *chan_p)
         auto_p->cat_version=cat->version_number;
         if(auto_p->cat_version!=-1)
         {
-            log_message( log_module, MSG_INFO,"The CAT version changed");
+            log_message( log_module, MSG_INFO,"card-%d The CAT version changed", card_id);
         }
-        log_message( log_module, MSG_INFO,"New CAT we force SDT update after all sections seen");
+        log_message( log_module, MSG_INFO,"card-%d New CAT we force SDT update after all sections seen", card_id);
     }
     //we store the section
     auto_p->cat_sections_seen[cat->section_number]=1;

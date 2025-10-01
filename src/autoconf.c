@@ -93,10 +93,10 @@ char *autoconf_log_module = autoconf_log_module_buffer;
 
 
 int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id);
-int autoconf_read_cat(auto_p_t *auto_p,mumu_chan_p_t *chan_p);
-int autoconf_read_sdt(auto_p_t *auto_p,mumu_chan_p_t *chan_p);
+int autoconf_read_cat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id);
+int autoconf_read_sdt(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id);
 int autoconf_read_psip(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id);
-int autoconf_read_nit(auto_p_t *parameters,mumu_chan_p_t *chan_p);
+int autoconf_read_nit(auto_p_t *parameters,mumu_chan_p_t *chan_p,int card_id);
 int autoconf_read_pmt(auto_p_t *auto_p, mumudvb_channel_t *channel, mumudvb_ts_packet_t *pmt);
 int autoconf_pat_need_update(auto_p_t *auto_p, unsigned char *buf);
 int autoconf_cat_need_update(auto_p_t *auto_p, unsigned char *buf);
@@ -381,7 +381,7 @@ void autoconf_freeing(auto_p_t *auto_p)
 void autoconf_update_chan_status(auto_p_t *auto_p,mumu_chan_p_t *chan_p, int card_id)
 {
 	// Update channel status based on current configuration and channel state
-		log_message( autoconf_log_module, MSG_INFO,"[card-%d] Looking through all channels to see if they are ready for streaming", card_id);
+		log_message( autoconf_log_module, MSG_INFO,"card-%d Looking through all channels to see if they are ready for streaming", card_id);
 	pthread_mutex_lock(&chan_p->lock);
 	for (int ichan = 0; ichan < chan_p->number_of_channels; ichan++)
 	{
@@ -612,7 +612,7 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 			while(auto_p->cat_need_update && get_ts_packet(ts_packet,auto_p->autoconf_temp_cat))
 			{
 				ts_packet=NULL; // next call we only POP packets from the stack
-				autoconf_read_cat(auto_p,chan_p);
+				autoconf_read_cat(auto_p,chan_p,card_id);
 			}
 		}
 		else if(pid==17) //SDT : contains the names of the services
@@ -623,7 +623,7 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 				while(auto_p->sdt_need_update && get_ts_packet(ts_packet,auto_p->autoconf_temp_sdt))
 				{
 					ts_packet=NULL; // next call we only POP packets from the stack
-					autoconf_read_sdt(auto_p,chan_p);
+					autoconf_read_sdt(auto_p,chan_p,card_id);
 				}
 			}
 		}
@@ -649,10 +649,10 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 				while(auto_p->nit_need_update && get_ts_packet(ts_packet,auto_p->autoconf_temp_nit))
 				{
 					ts_packet=NULL; // next call we only POP packets from the stack
-					if(autoconf_read_nit(auto_p, chan_p))
+					if(autoconf_read_nit(auto_p, chan_p, card_id))
 					{
 						//We update the names for the %lcn
-						log_message( autoconf_log_module, MSG_INFO,"[card-%d] We got the NIT, we update the channel names", card_id);
+						log_message( autoconf_log_module, MSG_INFO,"card-%d We got the NIT, we update the channel names", card_id);
 						autoconf_update_chan_name(chan_p, auto_p);
 					}
 
@@ -662,13 +662,13 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 		if(auto_p->need_filter_chan_update)
 		{
 			//We update all aspects of the channels
-			log_message( autoconf_log_module, MSG_INFO,"[card-%d] We update the channel names", card_id);
+			log_message( autoconf_log_module, MSG_INFO,"card-%d We update the channel names", card_id);
 			autoconf_update_chan_name(chan_p, auto_p);
-			log_message( autoconf_log_module, MSG_INFO,"[card-%d] We update the channel status", card_id);
+			log_message( autoconf_log_module, MSG_INFO,"card-%d We update the channel status", card_id);
 			autoconf_update_chan_status(auto_p,chan_p, card_id);
-			log_message( autoconf_log_module, MSG_INFO,"[card-%d] We update the channel filters", card_id);
+			log_message( autoconf_log_module, MSG_INFO,"card-%d We update the channel filters", card_id);
 			update_chan_filters(chan_p, tune_p->card_dev_path, tune_p->tuner, fds, tune_p->card);
-			log_message( autoconf_log_module, MSG_INFO,"[card-%d] We update the channel networking", card_id);
+			log_message( autoconf_log_module, MSG_INFO,"card-%d We update the channel networking", card_id);
 			update_chan_net(chan_p, auto_p, multi_p, unicast_vars, server_id, tune_p->card, tune_p->tuner);
 			auto_p->need_filter_chan_update=0;
 		}

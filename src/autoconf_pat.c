@@ -115,9 +115,9 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 		auto_p->pat_version=pat->version_number;
 		if(auto_p->pat_version!=-1)
 		{
-			log_message( log_module, MSG_INFO,"Card %d The PAT version changed, channels have changed", card_id);
+			log_message( log_module, MSG_INFO,"card-%d The PAT version changed, channels have changed", card_id);
 		}
-		log_message( log_module, MSG_INFO,"Card %d New PAT we force SDT update after all sections seen", card_id);
+		log_message( log_module, MSG_INFO,"card-%d New PAT we force SDT update after all sections seen", card_id);
 		//We mark previously existing autodetected channels for cleanup after all PAT parsing
 		//this flag will be set to READY if we see the channel again in this new PAT, otherwise it means the channel went down
 		//See the end of this function for more details

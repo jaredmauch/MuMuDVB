@@ -139,12 +139,13 @@ int autoconf_read_psip(auto_p_t *auto_p, mumu_chan_p_t *chan_p, int card_id)
 	else
 	{
 		//New version, no section seen
+		int old_version = auto_p->psip_version;
 		for(i=0;i<256;i++)
 			auto_p->psip_sections_seen[i]=0;
 		auto_p->psip_version=psip->version_number;
 		auto_p->psip_all_sections_seen=0;
-		if(auto_p->psip_version!=-1)
-			log_message( log_module, MSG_INFO,"card-%d The PSIP version changed, channels description have changed", card_id);
+		if(old_version!=-1)
+			log_message( log_module, MSG_INFO,"card-%d The PSIP version changed from %d to %d, channels description have changed", card_id, old_version, psip->version_number);
 
 	}
 	//we store the section
