@@ -776,6 +776,7 @@ int get_card_scan_results(int card_id, void *results, int max_results);
 int get_parallel_scan_results_count(void);
 int set_parallel_scan_limit(int scan_limit);
 int get_parallel_scan_limit(void);
+int has_reserved_cards_for_clients(void);
 
 // Unified card initialization functions
 int init_card_common(unified_card_t *card, int card_id, 

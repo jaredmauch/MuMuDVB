@@ -1575,6 +1575,22 @@ int get_parallel_scan_limit(void)
     return global_parallel_manager->unified_system->scan_limit;
 }
 
+/** @brief Check if there are reserved cards available for client requests
+ * @return 1 if reserved cards are available, 0 if not
+ */
+int has_reserved_cards_for_clients(void)
+{
+    if (!global_parallel_manager || !global_parallel_manager->unified_system) {
+        return 0;
+    }
+    
+    unified_channel_system_t *unified_system = global_parallel_manager->unified_system;
+    
+    // If scan_limit is less than num_cards, we have reserved cards
+    return (unified_system->scan_limit > 0 && 
+            unified_system->scan_limit < unified_system->num_cards);
+}
+
 /** @brief Start parallel scanning of all cards and frequencies
  * @return 0 on success, -1 on error
  */
@@ -1591,8 +1607,9 @@ int start_parallel_card_scanning(void)
     int threads_to_create = unified_system->num_cards;
     if (unified_system->scan_limit > 0 && unified_system->scan_limit < unified_system->num_cards) {
         threads_to_create = unified_system->scan_limit;
-        log_message(log_module, MSG_INFO, "Starting parallel scanning with %d card threads (limited by scan_limit=%d)", 
-                    threads_to_create, unified_system->scan_limit);
+        int reserved_cards = unified_system->num_cards - threads_to_create;
+        log_message(log_module, MSG_INFO, "Starting parallel scanning with %d card threads (reserving %d card%s for client requests)", 
+                    threads_to_create, reserved_cards, reserved_cards == 1 ? "" : "s");
     } else {
         log_message(log_module, MSG_INFO, "Starting parallel scanning with %d card threads", 
                     threads_to_create);
