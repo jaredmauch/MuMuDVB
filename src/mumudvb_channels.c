@@ -545,7 +545,7 @@ void update_chan_filters(mumu_chan_p_t *chan_p, char *card_base_path, int tuner,
 	// we open the file descriptors
 	if (create_card_fd (card_base_path, tuner, chan_p->asked_pid, fds) < 0)
 	{
-		log_message( log_module, MSG_ERROR,"ERROR : CANNOT open the new descriptors. Some channels will probably not work");
+		log_message( log_module, MSG_ERROR,"card-%d ERROR : CANNOT open the new descriptors. Some channels will probably not work", card_id);
 	}
 	set_filters(chan_p->asked_pid, fds);
 
