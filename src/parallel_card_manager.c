@@ -1346,8 +1346,63 @@ void *card_worker_thread(void *arg)
     register_card_usage(card_id, 0.0, "parallel_system_tuning");
     log_message(log_module, MSG_INFO, "card-%d registered for parallel system tuning (thread start)", card_id);
     
-    // Test all frequencies for this card and maintain availability
+    // Test all frequencies for this card with coordination
     for (int freq_idx = 0; freq_idx < unified_system->num_frequencies; freq_idx++) {
+        // Check if this card should be active (not on idle stack)
+        int should_be_active = 1;
+        pthread_mutex_lock(&global_parallel_manager->idle_rotation_mutex);
+        for (int i = 0; i <= global_parallel_manager->idle_stack_top; i++) {
+            if (global_parallel_manager->idle_card_stack[i] == card_id) {
+                should_be_active = 0;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&global_parallel_manager->idle_rotation_mutex);
+        
+        if (!should_be_active) {
+            // This card is currently idle, wait for it to become active
+            log_message(log_module, MSG_DEBUG, "card-%d is idle, waiting for activation", card_id);
+            while (1) {
+                // Check for shutdown
+                if (get_interrupted()) {
+                    log_message(log_module, MSG_INFO, "card-%d worker shutting down due to interrupt signal", card_id);
+                    unregister_card_usage(card_id, "parallel_system_tuning");
+                    return NULL;
+                }
+                
+                pthread_mutex_lock(&global_parallel_manager->shutdown_mutex);
+                if (global_parallel_manager->shutdown_requested) {
+                    pthread_mutex_unlock(&global_parallel_manager->shutdown_mutex);
+                    log_message(log_module, MSG_INFO, "card-%d worker shutting down", card_id);
+                    unregister_card_usage(card_id, "parallel_system_tuning");
+                    return NULL;
+                }
+                pthread_mutex_unlock(&global_parallel_manager->shutdown_mutex);
+                
+                // Check if this card is now active
+                int is_now_active = 1;
+                pthread_mutex_lock(&global_parallel_manager->idle_rotation_mutex);
+                for (int i = 0; i <= global_parallel_manager->idle_stack_top; i++) {
+                    if (global_parallel_manager->idle_card_stack[i] == card_id) {
+                        is_now_active = 0;
+                        break;
+                    }
+                }
+                pthread_mutex_unlock(&global_parallel_manager->idle_rotation_mutex);
+                
+                if (is_now_active) {
+                    log_message(log_module, MSG_INFO, "card-%d activated, resuming scanning", card_id);
+                    register_card_usage(card_id, 0.0, "parallel_system_tuning");
+                    break;
+                }
+                
+                // Sleep for a short time before checking again
+                if (event_sleep_interruptible(MS_TO_US(100)) < 0) {
+                    unregister_card_usage(card_id, "parallel_system_tuning");
+                    return NULL; // Interrupted
+                }
+            }
+        }
         // Check for shutdown before each frequency test
         if (get_interrupted()) {
             log_message(log_module, MSG_INFO, "card-%d worker shutting down due to interrupt signal", card_id);
@@ -1518,8 +1573,33 @@ void *card_worker_thread(void *arg)
         // Free the allocated result structure
         free(result);
         
-        // All cards now have their own threads, so no rotation needed
-        // Each card thread will handle its own frequency testing
+        // Implement idle card rotation after each frequency test
+        if (unified_system->num_cards > 1) {
+            // Find the card index for this card_id
+            int card_idx = -1;
+            for (int i = 0; i < unified_system->num_cards; i++) {
+                if (unified_system->cards[i].card_id == card_id) {
+                    card_idx = i;
+                    break;
+                }
+            }
+            
+            if (card_idx >= 0) {
+                // Try to rotate with an idle card
+                int next_active_card = rotate_idle_card(card_idx);
+                if (next_active_card >= 0) {
+                    log_message(log_module, MSG_INFO, "card-%d rotated to idle, card %d (adapter %d) now active", 
+                               card_id, next_active_card, unified_system->cards[next_active_card].card_id);
+                    
+                    // Clean up card usage for the card that's becoming idle
+                    unregister_card_usage(card_id, "parallel_system_tuning");
+                    log_message(log_module, MSG_INFO, "card-%d unregistered from parallel system tuning", card_id);
+                    
+                    // The current thread will now become idle and wait for reactivation
+                    log_message(log_module, MSG_INFO, "card-%d becoming idle after frequency test", card_id);
+                }
+            }
+        }
         
         // Wait for next frequency test timing event instead of usleep
         if (global_timing_tracker) {
@@ -1780,17 +1860,17 @@ int start_parallel_card_scanning(void)
     
     unified_channel_system_t *unified_system = global_parallel_manager->unified_system;
     
-    // Create threads for ALL cards - each card will coordinate with others
-    // This ensures all cards get used for scanning
+    // Create threads for ALL cards but coordinate to use only num_cards - 1 at a time
+    // This ensures all cards get used through proper rotation
     int threads_to_create = unified_system->num_cards;
-    log_message(log_module, MSG_INFO, "Starting parallel scanning with %d card threads (all cards active)", 
+    log_message(log_module, MSG_INFO, "Starting parallel scanning with %d card threads (coordinated rotation)", 
                 threads_to_create);
     
-    // Initialize idle card stack for coordination (but all cards will have threads)
+    // Initialize idle card stack for coordination
     for (int i = 0; i < unified_system->num_cards; i++) {
         push_idle_card(i);
     }
-    log_message(log_module, MSG_INFO, "All %d cards initialized for parallel scanning", unified_system->num_cards);
+    log_message(log_module, MSG_INFO, "All %d cards initialized for coordinated parallel scanning", unified_system->num_cards);
     
     global_parallel_manager->scan_in_progress = 1;
     global_parallel_manager->current_result_count = 0;
@@ -1801,7 +1881,7 @@ int start_parallel_card_scanning(void)
     
     int thread_count = 0;
     for (int card_idx = 0; card_idx < unified_system->num_cards; card_idx++) {
-        // Create thread for all cards - no skipping
+        // Create thread for all cards - coordination happens at runtime
         
         int *card_id = malloc(sizeof(int));
         if (!card_id) {
