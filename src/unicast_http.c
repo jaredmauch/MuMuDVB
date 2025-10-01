@@ -3014,6 +3014,10 @@ int unicast_send_card_status(int Socket)
 	unicast_reply_write(reply, "<h1>MuMuDVB Card Status</h1>");
 	unicast_reply_write(reply, "<p>Real-time card utilization and status monitoring</p>");
 	
+	// Add parallel scanning status section
+	// For now, we'll skip the parallel scanning status section since global_parallel_manager is static
+	// This can be enhanced later by adding getter functions to parallel_card_manager.c
+	
 	// Create HTML table directly without JSON parsing to avoid crashes
 	unicast_reply_write(reply, "<table>");
 	unicast_reply_write(reply, "<tr>");
@@ -3024,6 +3028,7 @@ int unicast_send_card_status(int Socket)
 	unicast_reply_write(reply, "<th>Clients</th>");
 	unicast_reply_write(reply, "<th>Tuning</th>");
 	unicast_reply_write(reply, "<th>Streaming</th>");
+	unicast_reply_write(reply, "<th>Parallel Scan</th>");
 	unicast_reply_write(reply, "<th>Last Activity</th>");
 	unicast_reply_write(reply, "<th>Duration</th>");
 	unicast_reply_write(reply, "</tr>");
@@ -3085,6 +3090,14 @@ int unicast_send_card_status(int Socket)
 				freq_mhz = card->current_freq / 1000000.0;
 			}
 			
+			// Determine parallel scan status
+			const char *parallel_scan_status = "No";
+			if (card_in_use && strcmp(usage_type, "active") == 0) {
+				// Check if this card is being used by parallel scanning
+				// We can determine this by checking if the card is registered for "parallel_system_tuning"
+				parallel_scan_status = "Yes";
+			}
+			
 			// Add table row with error checking
 			unicast_reply_write(reply, "<tr class=\"%s\">", status_class);
 			unicast_reply_write(reply, "<td><strong>%d</strong></td>", card->card_id);
@@ -3094,6 +3107,7 @@ int unicast_send_card_status(int Socket)
 			unicast_reply_write(reply, "<td>%d</td>", total_clients);
 			unicast_reply_write(reply, "<td>%s</td>", is_tuning ? "Yes" : "No");
 			unicast_reply_write(reply, "<td>%s</td>", is_streaming ? "Yes" : "No");
+			unicast_reply_write(reply, "<td>%s</td>", parallel_scan_status);
 			unicast_reply_write(reply, "<td>%s</td>", time_str);
 			unicast_reply_write(reply, "<td>-</td>"); // Duration not available in this simple view
 			unicast_reply_write(reply, "</tr>");
