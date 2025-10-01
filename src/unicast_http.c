@@ -2000,7 +2000,32 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 
 			if(err404)
 			{
-				log_message( log_module, MSG_INFO,"Path not found i.e. 404\n");
+				// Extract the requested URL from the HTTP request
+				char *requested_url = NULL;
+				if (strstr(client->buffer,"GET ")==client->buffer || strstr(client->buffer,"HEAD ")==client->buffer)
+				{
+					int url_pos = (strstr(client->buffer,"HEAD ")==client->buffer) ? 5 : 4; // Skip "HEAD " or "GET "
+					char *url_start = client->buffer + url_pos;
+					char *url_end = strstr(url_start, " ");
+					if (url_end != NULL)
+					{
+						*url_end = '\0'; // Temporarily null-terminate for logging
+						requested_url = url_start;
+					}
+				}
+				
+				if (requested_url != NULL)
+				{
+					log_message( log_module, MSG_INFO,"Path not found i.e. 404 - Requested URL: %s\n", requested_url);
+					// Restore the space character
+					char *space_pos = strstr(client->buffer, " ");
+					if (space_pos != NULL)
+						*space_pos = ' ';
+				}
+				else
+				{
+					log_message( log_module, MSG_INFO,"Path not found i.e. 404\n");
+				}
 				reply = unicast_reply_init();
 				if (NULL == reply) {
 					log_message( log_module, MSG_INFO,"Error when creating the HTTP reply\n");
