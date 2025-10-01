@@ -279,6 +279,9 @@ int init_parallel_card_manager(unified_channel_system_t *unified_system)
         goto cleanup_init;
     }
     
+    // Initialize all thread slots to 0 (invalid thread ID)
+    memset(global_parallel_manager->card_threads, 0, sizeof(pthread_t) * unified_system->num_cards);
+    
     // Card mutexes are already initialized in the card availability structures above
     
     // Initialize card availability structures
@@ -382,8 +385,13 @@ void cleanup_parallel_card_manager(void)
                     log_message(log_module, MSG_DEBUG, "Waiting for card %d thread to complete (thread_id=%lu)...", i, (unsigned long)thread_id);
                     
                     // Validate thread ID is reasonable (not obviously corrupted)
-                    if ((unsigned long)thread_id < 0x1000 || (unsigned long)thread_id > 0x7fffffffffff) {
-                        log_message(log_module, MSG_ERROR, "Card %d thread ID appears corrupted: %lu, skipping join", i, (unsigned long)thread_id);
+                    // Check for common corruption patterns like repeated bytes
+                    unsigned long tid = (unsigned long)thread_id;
+                    if (tid < 0x1000 || tid > 0x7fffffffffff || 
+                        (tid & 0xFFFFFFFF) == (tid >> 32) ||  // Check for repeated 32-bit patterns
+                        tid == 0x6464646464646461) {           // Check for specific corruption pattern seen in crash
+                        log_message(log_module, MSG_ERROR, "Card %d thread ID appears corrupted: %lu (0x%lx), skipping join", 
+                                   i, tid, tid);
                         continue;
                     }
                     
