@@ -89,6 +89,31 @@ static char *log_module="Unicast : ";
 extern unified_channel_system_t *global_unified_system;
 
 /**
+ * @brief Get unified enhanced channel data for HTTP operations (preserves frequency/card info)
+ * @param channels Output enhanced channel array
+ * @param number_of_channels Output number of channels
+ * @return 0 on success, -1 on error
+ */
+static int get_unified_enhanced_channel_data(enhanced_channel_t **channels, int *number_of_channels)
+{
+    if (!channels || !number_of_channels) {
+        return -1;
+    }
+    
+    // Try to get enhanced channels from unified storage v2
+    if (global_unified_system && global_unified_system->unified_storage_v2 &&
+        get_all_channels_adapter(channels, number_of_channels) == 0 &&
+        *number_of_channels > 0) {
+        
+        log_message(log_module, MSG_DEBUG, "Using %d enhanced channels from unified storage v2 for validation", *number_of_channels);
+        return 0;
+    }
+    
+    // Fallback to regular channels - this will be set by the caller
+    return -1; // Indicate we need to use regular channels
+}
+
+/**
  * @brief Get unified channel data for HTTP operations (same as web interface)
  * @param channels Output channel array
  * @param number_of_channels Output number of channels
