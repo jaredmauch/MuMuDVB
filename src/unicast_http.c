@@ -88,6 +88,166 @@ static char *log_module="Unicast : ";
 // Global unified system reference (will be set by main system)
 extern unified_channel_system_t *global_unified_system;
 
+/**
+ * @brief Get unified channel data for HTTP operations (same as web interface)
+ * @param channels Output channel array
+ * @param number_of_channels Output number of channels
+ * @return 0 on success, -1 on error
+ */
+static int get_unified_channel_data(mumudvb_channel_t **channels, int *number_of_channels)
+{
+    if (!channels || !number_of_channels) {
+        return -1;
+    }
+    
+    // Try to get channels from unified storage v2 first, fallback to regular channels
+    enhanced_channel_t *enhanced_channels = NULL;
+    int num_enhanced_channels = 0;
+    mumudvb_channel_t *unified_base_channels = NULL;
+    int num_unified_channels = 0;
+    
+    // Check if we have a unified system with storage v2
+    if (global_unified_system && global_unified_system->unified_storage_v2 &&
+        get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+        num_enhanced_channels > 0) {
+        
+        // Convert enhanced channels to base channels for HTTP endpoint
+        if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+                                             &unified_base_channels, &num_unified_channels) == 0) {
+            log_message(log_module, MSG_DEBUG, "Using %d channels from unified storage v2 for validation", num_unified_channels);
+            *channels = unified_base_channels;
+            *number_of_channels = num_unified_channels;
+            free(enhanced_channels);
+            return 0;
+        }
+        free(enhanced_channels);
+    }
+    
+    // Fallback to regular channels - this will be set by the caller
+    return -1; // Indicate we need to use regular channels
+}
+
+/**
+ * @brief Find channel by number in the unified channel data
+ * @param channel_number 1-based channel number
+ * @param channels Channel array
+ * @param number_of_channels Number of channels
+ * @return Pointer to channel if found and ready, NULL otherwise
+ */
+static mumudvb_channel_t *find_channel_by_number(int channel_number, 
+                                                 mumudvb_channel_t *channels, 
+                                                 int number_of_channels)
+{
+    if (!channels || channel_number <= 0 || channel_number > number_of_channels) {
+        return NULL;
+    }
+    
+    // Convert to 0-based index
+    int channel_index = channel_number - 1;
+    
+    // Check if channel is ready
+    if (channels[channel_index].channel_ready >= READY) {
+        return &channels[channel_index];
+    }
+    
+    return NULL;
+}
+
+/**
+ * @brief Get frequency for a channel from unified storage
+ * @param channel Channel to get frequency for
+ * @return Frequency in Hz, or 0 if not found
+ */
+static double get_channel_frequency(mumudvb_channel_t *channel)
+{
+    if (!channel || !global_unified_system || !global_unified_system->unified_storage_v2) {
+        return 0.0;
+    }
+    
+    // Look up frequency in unified storage
+    double frequency = 0.0;
+    if (get_channel_frequency_from_storage(global_unified_system->unified_storage_v2, 
+                                          channel, &frequency) == 0) {
+        return frequency;
+    }
+    
+    return 0.0;
+}
+
+/**
+ * @brief Find available card for a frequency
+ * @param frequency Frequency to tune to
+ * @param exclude_card_id Card ID to exclude from selection
+ * @return Card ID if available, -1 if none available
+ */
+static int find_available_card_for_frequency(double frequency, int exclude_card_id)
+{
+    if (!global_unified_system || frequency <= 0) {
+        return -1;
+    }
+    
+    // Check if any card is already tuned to this frequency
+    for (int i = 0; i < global_unified_system->num_cards; i++) {
+        if (global_unified_system->cards[i].card_id == exclude_card_id) {
+            continue; // Skip excluded card
+        }
+        
+        // Check if card is already tuned to this frequency
+        if (global_unified_system->cards[i].current_frequency == frequency &&
+            global_unified_system->cards[i].is_tuned) {
+            log_message(log_module, MSG_DEBUG, "Card %d already tuned to frequency %.0f Hz", 
+                       global_unified_system->cards[i].card_id, frequency);
+            return global_unified_system->cards[i].card_id;
+        }
+    }
+    
+    // Find an available card that can be tuned to this frequency
+    for (int i = 0; i < global_unified_system->num_cards; i++) {
+        if (global_unified_system->cards[i].card_id == exclude_card_id) {
+            continue; // Skip excluded card
+        }
+        
+        // Check if card is available and not in use
+        if (!global_unified_system->cards[i].is_in_use && 
+            !global_unified_system->cards[i].is_tuned) {
+            log_message(log_module, MSG_DEBUG, "Card %d available for frequency %.0f Hz", 
+                       global_unified_system->cards[i].card_id, frequency);
+            return global_unified_system->cards[i].card_id;
+        }
+    }
+    
+    log_message(log_module, MSG_WARN, "No available card found for frequency %.0f Hz", frequency);
+    return -1;
+}
+
+/**
+ * @brief Reserve a card for a specific frequency
+ * @param card_id Card ID to reserve
+ * @param frequency Frequency to reserve for
+ * @return 0 on success, -1 on error
+ */
+static int reserve_card_for_frequency(int card_id, double frequency)
+{
+    if (!global_unified_system || card_id < 0 || frequency <= 0) {
+        return -1;
+    }
+    
+    // Find the card
+    for (int i = 0; i < global_unified_system->num_cards; i++) {
+        if (global_unified_system->cards[i].card_id == card_id) {
+            global_unified_system->cards[i].is_in_use = 1;
+            global_unified_system->cards[i].current_frequency = frequency;
+            global_unified_system->cards[i].is_tuned = 1;
+            log_message(log_module, MSG_INFO, "Reserved card %d for frequency %.0f Hz", 
+                       card_id, frequency);
+            return 0;
+        }
+    }
+    
+    log_message(log_module, MSG_ERROR, "Card %d not found for reservation", card_id);
+    return -1;
+}
+
 // Unicast file descriptor types
 #define UNICAST_MASTER 1
 #define UNICAST_CLIENT 2
@@ -905,13 +1065,72 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 				else
 				{
 					requested_channel=atoi(substring);
-					if(requested_channel && requested_channel<=number_of_channels)
-						log_message( log_module, MSG_DEBUG,"Channel by number, number %d\n",requested_channel);
-					else
-					{
-						log_message( log_module, MSG_INFO,"Channel by number, number %d out of range\n",requested_channel);
-						err404=1;
-						requested_channel=0;
+					
+					// Use unified channel data for validation (same as web interface)
+					mumudvb_channel_t *unified_channels = NULL;
+					int unified_number_of_channels = 0;
+					mumudvb_channel_t *target_channel = NULL;
+					
+					// Try to get unified channel data first
+					if (get_unified_channel_data(&unified_channels, &unified_number_of_channels) == 0) {
+						// Use unified channel data
+						target_channel = find_channel_by_number(requested_channel, unified_channels, unified_number_of_channels);
+						if (target_channel) {
+							log_message( log_module, MSG_DEBUG,"Channel by number, number %d found in unified storage\n",requested_channel);
+							
+							// Get frequency for this channel
+							double frequency = get_channel_frequency(target_channel);
+							if (frequency > 0) {
+								// Find available card for this frequency
+								int card_id = find_available_card_for_frequency(frequency, -1);
+								if (card_id >= 0) {
+									// Reserve the card for this frequency
+									if (reserve_card_for_frequency(card_id, frequency) == 0) {
+										log_message( log_module, MSG_INFO,"Channel %d (%s) assigned to card %d on frequency %.0f Hz\n", 
+												   requested_channel, target_channel->name, card_id, frequency);
+									} else {
+										log_message( log_module, MSG_ERROR,"Failed to reserve card %d for channel %d\n", card_id, requested_channel);
+										err404=1;
+										requested_channel=0;
+									}
+								} else {
+									log_message( log_module, MSG_ERROR,"No available card for channel %d frequency %.0f Hz\n", requested_channel, frequency);
+									err404=1;
+									requested_channel=0;
+								}
+							} else {
+								log_message( log_module, MSG_ERROR,"Could not determine frequency for channel %d\n", requested_channel);
+								err404=1;
+								requested_channel=0;
+							}
+						} else {
+							log_message( log_module, MSG_INFO,"Channel by number, number %d not found or not ready in unified storage\n",requested_channel);
+							err404=1;
+							requested_channel=0;
+						}
+						// Free unified channels if we allocated them
+						if (unified_channels) {
+							free(unified_channels);
+						}
+					} else {
+						// Fallback to regular channel validation
+						if(requested_channel && requested_channel<=number_of_channels)
+						{
+							// Check if channel is ready
+							if (channels[requested_channel-1].channel_ready >= READY) {
+								log_message( log_module, MSG_DEBUG,"Channel by number, number %d (fallback to regular channels)\n",requested_channel);
+							} else {
+								log_message( log_module, MSG_INFO,"Channel by number, number %d not ready (fallback to regular channels)\n",requested_channel);
+								err404=1;
+								requested_channel=0;
+							}
+						}
+						else
+						{
+							log_message( log_module, MSG_INFO,"Channel by number, number %d out of range (fallback to regular channels)\n",requested_channel);
+							err404=1;
+							requested_channel=0;
+						}
 					}
 				}
 			}
