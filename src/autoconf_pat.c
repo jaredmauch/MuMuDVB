@@ -84,6 +84,8 @@ void autoconf_pat_need_update(auto_p_t *auto_p, unsigned char *buf)
  */
 int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 {
+	// Protect the entire function with chan_p mutex to prevent race conditions
+	pthread_mutex_lock(&chan_p->lock);
 	mumudvb_ts_packet_t *pat_mumu;
 	unsigned char *buf=NULL;
 	pat_mumu=auto_p->autoconf_temp_pat;
@@ -124,8 +126,6 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 		if (chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
 			log_message( log_module, MSG_ERROR,"Card %d Invalid number_of_channels: %d (max: %d), skipping channel cleanup\n", 
 						card_id, chan_p->number_of_channels, MAX_CHANNELS);
-			// Use mutex to safely reset the value
-			pthread_mutex_lock(&chan_p->lock);
 			chan_p->number_of_channels = 0; // Reset to safe value
 			pthread_mutex_unlock(&chan_p->lock);
 			return 0; // Exit early to prevent further corruption
@@ -203,8 +203,6 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 		if (chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
 			log_message( log_module, MSG_ERROR,"Card %d Invalid number_of_channels in cleanup: %d (max: %d), skipping\n", 
 						card_id, chan_p->number_of_channels, MAX_CHANNELS);
-			// Use mutex to safely reset the value
-			pthread_mutex_lock(&chan_p->lock);
 			chan_p->number_of_channels = 0; // Reset to safe value
 			pthread_mutex_unlock(&chan_p->lock);
 			return 0; // Exit early to prevent further corruption
@@ -253,8 +251,6 @@ int autoconf_pat_update_chan(pat_prog_t  *prog,int pat_version,mumu_chan_p_t *ch
 	if (chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
 		log_message( log_module, MSG_ERROR,"Invalid number_of_channels in update_chan: %d (max: %d), skipping\n", 
 					chan_p->number_of_channels, MAX_CHANNELS);
-		// Use mutex to safely reset the value
-		pthread_mutex_lock(&chan_p->lock);
 		chan_p->number_of_channels = 0; // Reset to safe value
 		pthread_mutex_unlock(&chan_p->lock);
 		return -1;
@@ -278,9 +274,7 @@ int autoconf_pat_update_chan(pat_prog_t  *prog,int pat_version,mumu_chan_p_t *ch
 		if(chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
 			log_message( log_module, MSG_ERROR,"Invalid number_of_channels before channel creation: %d (max: %d), resetting\n", 
 						chan_p->number_of_channels, MAX_CHANNELS);
-			pthread_mutex_lock(&chan_p->lock);
 			chan_p->number_of_channels = 0;
-			pthread_mutex_unlock(&chan_p->lock);
 		}
 		
 		if(chan_p->number_of_channels>=(MAX_CHANNELS-1))
@@ -373,7 +367,7 @@ int autoconf_pat_update_chan(pat_prog_t  *prog,int pat_version,mumu_chan_p_t *ch
 	//reset PMT version to force channel update
 	chan_p->channels[chan_num].pmt_version=-1;
 
-
+	pthread_mutex_unlock(&chan_p->lock);
 	return 0;
 }
 
