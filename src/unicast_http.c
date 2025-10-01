@@ -1038,6 +1038,39 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					}
 				}
 			}
+			//Channel names list
+			//GET /byname/
+			else if(strstr(client->buffer +pos ,"/byname/ ")==(client->buffer +pos))
+			{
+				log_message( log_module, MSG_DETAIL,"Channel names list\n");
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				if (global_unified_system && global_unified_system->unified_storage_v2 &&
+				    get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
+				    num_enhanced_channels > 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for channel names list", num_unified_channels);
+						unicast_send_channel_names_list(num_unified_channels, unified_base_channels, client->Socket);
+						free(unified_base_channels);
+						free(enhanced_channels);
+						return -2;
+					}
+					free(enhanced_channels);
+				}
+				
+				// Fallback to regular channels
+				unicast_send_channel_names_list(number_of_channels, channels, client->Socket);
+				return -2; //We close the connection afterwards
+			}
 			//Channel by name
 			//GET /byname/channelname
 			else if(strstr(client->buffer +pos ,"/byname/")==(client->buffer +pos))
@@ -1088,39 +1121,6 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
                         requested_channel=0;
                     }
 				}
-			}
-			//Channel names list
-			//GET /byname/
-			else if(strstr(client->buffer +pos ,"/byname/ ")==(client->buffer +pos))
-			{
-				log_message( log_module, MSG_DETAIL,"Channel names list\n");
-				
-				// Try to get channels from unified storage v2 first, fallback to regular channels
-				enhanced_channel_t *enhanced_channels = NULL;
-				int num_enhanced_channels = 0;
-				mumudvb_channel_t *unified_base_channels = NULL;
-				int num_unified_channels = 0;
-				
-				// Check if we have a unified system with storage v2
-				if (global_unified_system && global_unified_system->unified_storage_v2 &&
-				    get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
-				    num_enhanced_channels > 0) {
-					
-					// Convert enhanced channels to base channels for HTTP endpoint
-					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
-					                                     &unified_base_channels, &num_unified_channels) == 0) {
-						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for channel names list", num_unified_channels);
-						unicast_send_channel_names_list(num_unified_channels, unified_base_channels, client->Socket);
-						free(unified_base_channels);
-						free(enhanced_channels);
-						return -2;
-					}
-					free(enhanced_channels);
-				}
-				
-				// Fallback to regular channels
-				unicast_send_channel_names_list(number_of_channels, channels, client->Socket);
-				return -2; //We close the connection afterwards
 			}
 			//Channel by card (prefix for byname and bysid)
 			//GET /bycard/card_id/byname/channelname or /bycard/card_id/bysid/sid
