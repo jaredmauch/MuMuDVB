@@ -113,44 +113,6 @@ static int get_unified_enhanced_channel_data(enhanced_channel_t **channels, int 
     return -1; // Indicate we need to use regular channels
 }
 
-/**
- * @brief Get unified channel data for HTTP operations (same as web interface)
- * @param channels Output channel array
- * @param number_of_channels Output number of channels
- * @return 0 on success, -1 on error
- */
-static int get_unified_channel_data(mumudvb_channel_t **channels, int *number_of_channels)
-{
-    if (!channels || !number_of_channels) {
-        return -1;
-    }
-    
-    // Try to get channels from unified storage v2 first, fallback to regular channels
-    enhanced_channel_t *enhanced_channels = NULL;
-    int num_enhanced_channels = 0;
-    mumudvb_channel_t *unified_base_channels = NULL;
-    int num_unified_channels = 0;
-    
-    // Check if we have a unified system with storage v2
-    if (global_unified_system && global_unified_system->unified_storage_v2 &&
-        get_all_channels_adapter(&enhanced_channels, &num_enhanced_channels) == 0 &&
-        num_enhanced_channels > 0) {
-        
-        // Convert enhanced channels to base channels for HTTP endpoint
-        if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
-                                             &unified_base_channels, &num_unified_channels) == 0) {
-            log_message(log_module, MSG_DEBUG, "Using %d channels from unified storage v2 for validation", num_unified_channels);
-            *channels = unified_base_channels;
-            *number_of_channels = num_unified_channels;
-            free(enhanced_channels);
-            return 0;
-        }
-        free(enhanced_channels);
-    }
-    
-    // Fallback to regular channels - this will be set by the caller
-    return -1; // Indicate we need to use regular channels
-}
 
 /**
  * @brief Find enhanced channel by number in the unified channel data
@@ -178,179 +140,10 @@ static enhanced_channel_t *find_enhanced_channel_by_number(int channel_number,
     return NULL;
 }
 
-/**
- * @brief Find channel by number in the unified channel data (legacy)
- * @param channel_number 1-based channel number
- * @param channels Channel array
- * @param number_of_channels Number of channels
- * @return Pointer to channel if found and ready, NULL otherwise
- */
-static mumudvb_channel_t *find_channel_by_number(int channel_number, 
-                                                 mumudvb_channel_t *channels, 
-                                                 int number_of_channels)
-{
-    if (!channels || channel_number <= 0 || channel_number > number_of_channels) {
-        return NULL;
-    }
-    
-    // Convert to 0-based index
-    int channel_index = channel_number - 1;
-    
-    // Check if channel is ready
-    if (channels[channel_index].channel_ready >= READY) {
-        return &channels[channel_index];
-    }
-    
-    return NULL;
-}
 
-/**
- * @brief Find enhanced channel by name with whitespace handling
- * @param channel_name Channel name to find
- * @param channels Enhanced channel array
- * @param number_of_channels Number of channels
- * @return Pointer to enhanced channel if found and ready, NULL otherwise
- */
-static enhanced_channel_t *find_enhanced_channel_by_name(const char *channel_name, 
-                                                         enhanced_channel_t *channels, 
-                                                         int number_of_channels)
-{
-    if (!channels || !channel_name) {
-        return NULL;
-    }
-    
-    // Create a working copy of the requested name and trim whitespace
-    char requested_name[MAX_NAME_LEN];
-    strncpy(requested_name, channel_name, MAX_NAME_LEN - 1);
-    requested_name[MAX_NAME_LEN - 1] = '\0';
-    
-    // Trim trailing whitespace from requested name
-    char *end = requested_name + strlen(requested_name) - 1;
-    while (end > requested_name && isspace((unsigned char)*end)) {
-        end--;
-    }
-    end[1] = '\0';
-    
-    // Search through channels
-    for (int i = 0; i < number_of_channels; i++) {
-        if (channels[i].base_channel.channel_ready >= READY) {
-            // Create a working copy of the channel name and trim whitespace
-            char current_name[MAX_NAME_LEN];
-            strncpy(current_name, channels[i].base_channel.name, MAX_NAME_LEN - 1);
-            current_name[MAX_NAME_LEN - 1] = '\0';
-            
-            // Trim trailing whitespace from channel name
-            end = current_name + strlen(current_name) - 1;
-            while (end > current_name && isspace((unsigned char)*end)) {
-                end--;
-            }
-            end[1] = '\0';
-            
-            // Compare trimmed names
-            if (strcasecmp(current_name, requested_name) == 0) {
-                log_message(log_module, MSG_DEBUG, "Found channel by name: '%s' -> '%s' (index %d)", 
-                           channel_name, current_name, i);
-                return &channels[i];
-            }
-        }
-    }
-    
-    return NULL;
-}
 
-/**
- * @brief Get frequency for a channel from unified storage
- * @param channel Channel to get frequency for
- * @return Frequency in Hz, or 0 if not found
- */
-static double get_channel_frequency(mumudvb_channel_t *channel)
-{
-    if (!channel || !global_unified_system) {
-        return 0.0;
-    }
-    
-    // For now, we'll use a simple approach - get frequency from the first available card
-    // TODO: Implement proper frequency lookup from unified storage
-    for (int i = 0; i < global_unified_system->num_cards; i++) {
-        if (global_unified_system->cards[i].current_freq > 0) {
-            return global_unified_system->cards[i].current_freq;
-        }
-    }
-    
-    return 0.0;
-}
 
-/**
- * @brief Find available card for a frequency
- * @param frequency Frequency to tune to
- * @param exclude_card_id Card ID to exclude from selection
- * @return Card ID if available, -1 if none available
- */
-static int find_available_card_for_frequency(double frequency, int exclude_card_id)
-{
-    if (!global_unified_system || frequency <= 0) {
-        return -1;
-    }
-    
-    // Check if any card is already tuned to this frequency
-    for (int i = 0; i < global_unified_system->num_cards; i++) {
-        if (global_unified_system->cards[i].card_id == exclude_card_id) {
-            continue; // Skip excluded card
-        }
-        
-        // Check if card is already tuned to this frequency
-        if (global_unified_system->cards[i].current_freq == frequency &&
-            global_unified_system->cards[i].in_use) {
-            log_message(log_module, MSG_DEBUG, "Card %d already tuned to frequency %.0f Hz", 
-                       global_unified_system->cards[i].card_id, frequency);
-            return global_unified_system->cards[i].card_id;
-        }
-    }
-    
-    // Find an available card that can be tuned to this frequency
-    for (int i = 0; i < global_unified_system->num_cards; i++) {
-        if (global_unified_system->cards[i].card_id == exclude_card_id) {
-            continue; // Skip excluded card
-        }
-        
-        // Check if card is available and not in use
-        if (!global_unified_system->cards[i].in_use) {
-            log_message(log_module, MSG_DEBUG, "Card %d available for frequency %.0f Hz", 
-                       global_unified_system->cards[i].card_id, frequency);
-            return global_unified_system->cards[i].card_id;
-        }
-    }
-    
-    log_message(log_module, MSG_WARN, "No available card found for frequency %.0f Hz", frequency);
-    return -1;
-}
 
-/**
- * @brief Reserve a card for a specific frequency
- * @param card_id Card ID to reserve
- * @param frequency Frequency to reserve for
- * @return 0 on success, -1 on error
- */
-static int reserve_card_for_frequency(int card_id, double frequency)
-{
-    if (!global_unified_system || card_id < 0 || frequency <= 0) {
-        return -1;
-    }
-    
-    // Find the card
-    for (int i = 0; i < global_unified_system->num_cards; i++) {
-        if (global_unified_system->cards[i].card_id == card_id) {
-            global_unified_system->cards[i].in_use = 1;
-            global_unified_system->cards[i].current_freq = frequency;
-            log_message(log_module, MSG_INFO, "Reserved card %d for frequency %.0f Hz", 
-                       card_id, frequency);
-            return 0;
-        }
-    }
-    
-    log_message(log_module, MSG_ERROR, "Card %d not found for reservation", card_id);
-    return -1;
-}
 
 // Unicast file descriptor types
 #define UNICAST_MASTER 1
@@ -378,15 +171,6 @@ static int get_fd_type(unicast_parameters_t *unicast_vars, int fd) {
 	return UNICAST_LISTEN_CHANNEL;
 }
 
-// Helper function to find channel number for a socket
-static int get_channel_for_socket(mumudvb_channel_t *channels, int number_of_channels, int fd) {
-	for (int i = 0; i < number_of_channels; i++) {
-		if (channels[i].socketIn == fd) {
-			return i;
-		}
-	}
-	return -1; // Not found
-}
 
 //from unicast_client.c
 unicast_client_t *unicast_add_client(unicast_parameters_t *unicast_vars, int Socket, const char *client_ip);
@@ -425,8 +209,6 @@ unicast_send_EIT (eit_packet_t *eit_packets, int Socket);
 
 int unicast_handle_message(unicast_parameters_t* unicast_vars,
 		unicast_client_t* client,
-		mumudvb_channel_t* channels,
-		int number_of_channels,
 		strength_parameters_t* strengthparams,
 		auto_p_t* auto_p,
 		void* cam_p,
@@ -778,8 +560,6 @@ int unicast_create_listening_socket(int socket_type, int socket_channel, char *i
  *
  */
 int unicast_handle_fd_event(unicast_parameters_t *unicast_vars,
-		mumudvb_channel_t *channels,
-		int number_of_channels,
 		strength_parameters_t *strengthparams,
 		auto_p_t *auto_p,
 		void *cam_p,
@@ -859,13 +639,9 @@ int unicast_handle_fd_event(unicast_parameters_t *unicast_vars,
 					{
 						//Event on a channel connection, we open a new socket for this client and
 						//we store the wanted channel for when we will get the GET
-						int channel_num = get_channel_for_socket(channels, number_of_channels, unicast_vars->pfds[actual_fd].fd);
-						if (channel_num >= 0) {
-							log_message( log_module, MSG_DEBUG,"Connection on a channel socket the client will get the channel %d\n", channel_num);
-							tempClient->askedChannel = channel_num;
-						} else {
-							log_message(log_module, MSG_ERROR, "Channel not found for socket %d", unicast_vars->pfds[actual_fd].fd);
-						}
+						// Note: This functionality is deprecated with unified storage v2
+						log_message( log_module, MSG_DEBUG,"Connection on a channel socket (deprecated with unified storage v2)\n");
+						tempClient->askedChannel = -1; // No specific channel requested
 					}
 				}
 			}
@@ -885,7 +661,7 @@ int unicast_handle_fd_event(unicast_parameters_t *unicast_vars,
 					continue;
 				}
 				
-				iRet=unicast_handle_message(unicast_vars, client, channels, number_of_channels, strengthparams, auto_p, cam_p, scam_vars,eit_packets);
+				iRet=unicast_handle_message(unicast_vars, client, strengthparams, auto_p, cam_p, scam_vars, eit_packets);
 				if (iRet==-2 ) //iRet==-2 --> 0 received data or error, we close the connection
 				{
 					unicast_close_connection(unicast_vars,unicast_vars->pfds[actual_fd].fd);
@@ -1066,8 +842,6 @@ void unicast_close_connection(unicast_parameters_t *unicast_vars, int Socket)
  */
 int unicast_handle_message(unicast_parameters_t *unicast_vars,
 		unicast_client_t *client,
-		mumudvb_channel_t *channels,
-		int number_of_channels,
 		strength_parameters_t *strengthparams,
 		auto_p_t *auto_p,
 		void *cam_p,
@@ -1201,22 +975,22 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 									}
 								}
 								
-								// If no card is serving this frequency, find an available card and tune it
+								// If no card is serving this frequency, use the original card
 								if (existing_card_id == -1) {
-									int available_card_id = find_available_card_for_frequency(frequency, -1);
-									if (available_card_id >= 0) {
+									// Use the original card from the enhanced channel data
+									if (card_id >= 0) {
 										// Bootstrap the card (tune it and load TS data) for this frequency
-										if (bootstrap_card_for_frequency(available_card_id, frequency) == 0) {
+										if (bootstrap_card_for_frequency(card_id, frequency) == 0) {
 											log_message( log_module, MSG_INFO,"Channel %d (%s) bootstrapped on card %d for frequency %.0f Hz (original card: %d)\n", 
-													   requested_channel, target_enhanced_channel->base_channel.name, available_card_id, frequency, card_id);
-											existing_card_id = available_card_id;
+													   requested_channel, target_enhanced_channel->base_channel.name, card_id, frequency, card_id);
+											existing_card_id = card_id;
 										} else {
-											log_message( log_module, MSG_ERROR,"Failed to bootstrap card %d for channel %d frequency %.0f Hz\n", available_card_id, requested_channel, frequency);
+											log_message( log_module, MSG_ERROR,"Failed to bootstrap card %d for channel %d frequency %.0f Hz\n", card_id, requested_channel, frequency);
 											err404=1;
 											requested_channel=0;
 										}
 									} else {
-										log_message( log_module, MSG_ERROR,"No available card for channel %d frequency %.0f Hz\n", requested_channel, frequency);
+										log_message( log_module, MSG_ERROR,"No card available for channel %d frequency %.0f Hz\n", requested_channel, frequency);
 										err404=1;
 										requested_channel=0;
 									}
@@ -1226,15 +1000,10 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 								if (existing_card_id >= 0) {
 									// Convert enhanced channel to regular channel for client addition
 									// We need to ensure the regular channels array has this channel
-									if (requested_channel <= number_of_channels) {
-										// Copy the enhanced channel data to the regular channels array
-										memcpy(&channels[requested_channel-1], &target_enhanced_channel->base_channel, sizeof(mumudvb_channel_t));
-										log_message( log_module, MSG_DEBUG,"Updated regular channels array with enhanced channel %d data\n", requested_channel);
-									} else {
-										log_message( log_module, MSG_ERROR,"Channel %d exceeds regular channels array size %d\n", requested_channel, number_of_channels);
-										err404=1;
-										requested_channel=0;
-									}
+									if (requested_channel > 0) {
+									// No need to copy to regular channels array - we use unified storage v2 directly
+									log_message( log_module, MSG_DEBUG,"Using enhanced channel %d data directly from unified storage v2\n", requested_channel);
+								}
 								}
 							} else {
 								log_message( log_module, MSG_ERROR,"Channel %d has invalid frequency %.0f Hz\n", requested_channel, frequency);
@@ -1251,24 +1020,10 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 							free(enhanced_channels);
 						}
 					} else {
-						// Fallback to regular channel validation
-						if(requested_channel && requested_channel<=number_of_channels)
-						{
-							// Check if channel is ready
-							if (channels[requested_channel-1].channel_ready >= READY) {
-								log_message( log_module, MSG_DEBUG,"Channel by number, number %d (fallback to regular channels)\n",requested_channel);
-							} else {
-								log_message( log_module, MSG_INFO,"Channel by number, number %d not ready (fallback to regular channels)\n",requested_channel);
-								err404=1;
-								requested_channel=0;
-							}
-						}
-						else
-						{
-							log_message( log_module, MSG_INFO,"Channel by number, number %d out of range (fallback to regular channels)\n",requested_channel);
-							err404=1;
-							requested_channel=0;
-						}
+						// No fallback - unified storage v2 is required
+						log_message( log_module, MSG_ERROR,"Unified storage v2 not available for bynumber lookup - cannot find channel %d\n",requested_channel);
+						err404=1;
+						requested_channel=0;
 					}
 				}
 			}
@@ -1338,15 +1093,8 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 								{
 									if (card_channels[i].base_channel.service_id == requested_sid)
 									{
-										// Find the channel in the main channels array
-										for (int current_channel=0; current_channel<number_of_channels;current_channel++)
-										{
-											if(channels[current_channel].service_id == requested_sid)
-											{
-												requested_channel=current_channel+1;
-												break;
-											}
-										}
+									// No fallback - unified storage v2 is required
+									log_message( log_module, MSG_ERROR,"Unified storage v2 not available for bysid lookup - cannot find SID %d\n",requested_sid);
 										break;
 									}
 								}
@@ -1378,20 +1126,10 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					}
 					else
 					{
-						// Not in unified mode, use original logic
-						for(int current_channel=0; current_channel<number_of_channels;current_channel++)
-						{
-							if(channels[current_channel].service_id == requested_sid)
-								requested_channel=current_channel+1;
-						}
-						if(requested_channel)
-							log_message( log_module, MSG_DEBUG,"Channel by service id,  service_id %d number %d\n", requested_sid, requested_channel);
-						else
-						{
-							log_message( log_module, MSG_INFO,"Channel by service id, service_id  %d not found\n",requested_sid);
-							err404=1;
-							requested_channel=0;
-						}
+						// No fallback - unified storage v2 is required
+						log_message( log_module, MSG_ERROR,"Unified storage v2 not available for bysid lookup - cannot find SID %d\n",requested_sid);
+						err404=1;
+						requested_channel=0;
 					}
 				}
 			}
@@ -1424,9 +1162,9 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					free(enhanced_channels);
 				}
 				
-				// Fallback to regular channels
-				unicast_send_channel_names_list(number_of_channels, channels, client->Socket);
-				return -2; //We close the connection afterwards
+				// No fallback - unified storage v2 is required
+				log_message(log_module, MSG_ERROR, "Unified storage v2 not available for channel names list - cannot serve request");
+				err404=1;
 			}
 			//Channel by name
 			//GET /byname/channelname
@@ -1494,16 +1232,9 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
                         }
                     }
                     
-                    // Fallback to regular channels if unified storage failed
+                    // No fallback - unified storage v2 is required
                     if (requested_channel == 0) {
-                        for(int current_channel=0; current_channel<number_of_channels;current_channel++)
-                        {
-                            strcpy(current_channel_name, channels[current_channel].name);
-                            process_channel_name(current_channel_name);
-
-                            if(strcasecmp(current_channel_name, requested_channel_name) == 0)
-                                requested_channel=current_channel+1;
-                        }
+                        log_message(log_module, MSG_ERROR, "Unified storage v2 not available for byname lookup - cannot find channel '%s'", requested_channel_name);
                     }
                     if(requested_channel)
                         log_message( log_module, MSG_DEBUG,"Channel by name, name `%s` number `%d`\n", requested_channel_name, requested_channel);
@@ -1585,15 +1316,8 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 										
 										if(strcasecmp(current_channel_name, requested_channel_name) == 0)
 										{
-											// Find the channel in the main channels array
-											for(int current_channel=0; current_channel<number_of_channels;current_channel++)
-											{
-												if(channels[current_channel].service_id == card_channels[i].base_channel.service_id)
-												{
-													requested_channel=current_channel+1;
-													break;
-												}
-											}
+											// No fallback - unified storage v2 is required
+											log_message( log_module, MSG_ERROR,"Unified storage v2 not available for bycard lookup - cannot find channel\n");
 											break;
 										}
 									}
@@ -1631,15 +1355,8 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 									{
 										if(card_channels[i].base_channel.service_id == requested_sid)
 										{
-											// Find the channel in the main channels array
-											for(int current_channel=0; current_channel<number_of_channels;current_channel++)
-											{
-												if(channels[current_channel].service_id == requested_sid)
-												{
-													requested_channel=current_channel+1;
-													break;
-												}
-											}
+											// No fallback - unified storage v2 is required
+											log_message( log_module, MSG_ERROR,"Unified storage v2 not available for bycard bysid lookup - cannot find SID %d\n",requested_sid);
 											break;
 										}
 									}
@@ -1720,10 +1437,9 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					           num_enhanced_channels);
 				}
 				
-				// Fallback to regular channels
-				log_message(log_module, MSG_INFO, "Channels list: using regular channels (number_of_channels=%d)", number_of_channels);
-				unicast_send_streamed_channels_list (number_of_channels, channels, client->Socket, substring);
-				return -2; //We close the connection afterwards
+				// No fallback - unified storage v2 is required
+				log_message(log_module, MSG_ERROR, "Unified storage v2 not available for channels list - cannot serve request");
+				err404=1;
 			}
 			//Card utilization status
 			else if(strstr(client->buffer +pos ,"/card_status.json ")==(client->buffer +pos))
@@ -1760,9 +1476,9 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					free(enhanced_channels);
 				}
 				
-				// Fallback to regular channels
-				unicast_send_play_list_unicast (number_of_channels, channels, client->Socket, unicast_vars->portOut, 0, unicast_vars );
-				return -2; //We close the connection afterwards
+				// No fallback - unified storage v2 is required
+				log_message(log_module, MSG_ERROR, "Unified storage v2 not available for playlist - cannot serve request");
+				err404=1;
 			}
 			//playlist, m3u
 			else if(strstr(client->buffer +pos ,"/playlist_port.m3u ")==(client->buffer +pos))
@@ -1792,9 +1508,9 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					free(enhanced_channels);
 				}
 				
-				// Fallback to regular channels
-				unicast_send_play_list_unicast (number_of_channels, channels, client->Socket, unicast_vars->portOut, 1, unicast_vars );
-				return -2; //We close the connection afterwards
+				// No fallback - unified storage v2 is required
+				log_message(log_module, MSG_ERROR, "Unified storage v2 not available for playlist_port - cannot serve request");
+				err404=1;
 			}
 			else if(strstr(client->buffer +pos ,"/playlist_multicast.m3u ")==(client->buffer +pos))
 			{
@@ -1823,9 +1539,9 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					free(enhanced_channels);
 				}
 				
-				// Fallback to regular channels
-				unicast_send_play_list_multicast (number_of_channels, channels, client->Socket, 0, unicast_vars );
-				return -2; //We close the connection afterwards
+				// No fallback - unified storage v2 is required
+				log_message(log_module, MSG_ERROR, "Unified storage v2 not available for playlist_multicast - cannot serve request");
+				err404=1;
 			}
 			else if(strstr(client->buffer +pos ,"/playlist_multicast_vlc.m3u ")==(client->buffer +pos))
 			{
@@ -1854,9 +1570,9 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					free(enhanced_channels);
 				}
 				
-				// Fallback to regular channels
-				unicast_send_play_list_multicast (number_of_channels, channels, client->Socket, 1, unicast_vars );
-				return -2; //We close the connection afterwards
+				// No fallback - unified storage v2 is required
+				log_message(log_module, MSG_ERROR, "Unified storage v2 not available for playlist_multicast_vlc - cannot serve request");
+				err404=1;
 			}
 			//statistics, text version
 			else if(strstr(client->buffer +pos ,"/channels_list.json ")==(client->buffer +pos))
@@ -1886,14 +1602,16 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 					free(enhanced_channels);
 				}
 				
-				// Fallback to regular channels
-				unicast_send_streamed_channels_list_js (number_of_channels, channels, scam_vars, client->Socket);
-				return -2; //We close the connection afterwards
+				// No fallback - unified storage v2 is required
+				log_message(log_module, MSG_ERROR, "Unified storage v2 not available for channels_list.json - cannot serve request");
+				err404=1;
 			}
 			else if(strstr(client->buffer +pos ,"/monitor/state.json ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"HTTP request for state in Json\n");
-				unicast_send_json_state(number_of_channels, channels, client->Socket, strengthparams, auto_p, cam_p, scam_vars);
+				// TODO: Update unicast_send_json_state to use unified storage v2
+				log_message(log_module, MSG_ERROR, "unicast_send_json_state needs to be updated for unified storage v2");
+				err404=1;
 				return -2; //We close the connection afterwards
 			}
 			else if(strstr(client->buffer +pos ,"/monitor/signal_power.json ")==(client->buffer +pos))
@@ -1905,13 +1623,57 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 			else if(strstr(client->buffer +pos ,"/monitor/channels_traffic.json ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"Channel traffic json\n");
-				unicast_send_channel_traffic_js(number_of_channels, channels, client->Socket);
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				if (get_unified_enhanced_channel_data(&enhanced_channels, &num_enhanced_channels) == 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for channel traffic", num_unified_channels);
+						unicast_send_channel_traffic_js(num_unified_channels, unified_base_channels, client->Socket);
+						free(unified_base_channels);
+					} else {
+						log_message(log_module, MSG_ERROR, "Failed to convert enhanced channels to base channels for channel traffic");
+					}
+				} else {
+					log_message(log_module, MSG_ERROR, "No channels available for channel traffic");
+				}
+				
 				return -2; //We close the connection afterwards
 			}
 			else if(strstr(client->buffer +pos ,"/monitor/state.xml ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"HTTP request for XML State\n");
-				unicast_send_xml_state(number_of_channels, channels, client->Socket, strengthparams, auto_p, cam_p, scam_vars);
+				
+				// Try to get channels from unified storage v2 first, fallback to regular channels
+				enhanced_channel_t *enhanced_channels = NULL;
+				int num_enhanced_channels = 0;
+				mumudvb_channel_t *unified_base_channels = NULL;
+				int num_unified_channels = 0;
+				
+				// Check if we have a unified system with storage v2
+				if (get_unified_enhanced_channel_data(&enhanced_channels, &num_enhanced_channels) == 0) {
+					
+					// Convert enhanced channels to base channels for HTTP endpoint
+					if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+					                                     &unified_base_channels, &num_unified_channels) == 0) {
+						log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for XML state", num_unified_channels);
+						unicast_send_xml_state(num_unified_channels, unified_base_channels, client->Socket, strengthparams, auto_p, cam_p, scam_vars);
+						free(unified_base_channels);
+					} else {
+						log_message(log_module, MSG_ERROR, "Failed to convert enhanced channels to base channels for XML state");
+					}
+				} else {
+					log_message(log_module, MSG_ERROR, "No channels available for XML state");
+				}
+				
 				return -2; //We close the connection afterwards
 			}
 			//statistics, text version
@@ -1946,7 +1708,29 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
             else if(strstr(client->buffer +pos ,"/metrics")==(client->buffer +pos))
             {
                 log_message( log_module, MSG_DETAIL,"HTTP request for prometheus data\n");
-                unicast_send_prometheus(number_of_channels, channels, client->Socket, strengthparams);
+                
+                // Try to get channels from unified storage v2 first, fallback to regular channels
+                enhanced_channel_t *enhanced_channels = NULL;
+                int num_enhanced_channels = 0;
+                mumudvb_channel_t *unified_base_channels = NULL;
+                int num_unified_channels = 0;
+                
+                // Check if we have a unified system with storage v2
+                if (get_unified_enhanced_channel_data(&enhanced_channels, &num_enhanced_channels) == 0) {
+                    
+                    // Convert enhanced channels to base channels for HTTP endpoint
+                    if (convert_enhanced_to_base_channels(enhanced_channels, num_enhanced_channels, 
+                                                            &unified_base_channels, &num_unified_channels) == 0) {
+                        log_message(log_module, MSG_INFO, "Using %d channels from unified storage v2 for prometheus", num_unified_channels);
+                        unicast_send_prometheus(num_unified_channels, unified_base_channels, client->Socket, strengthparams);
+                        free(unified_base_channels);
+                    } else {
+                        log_message(log_module, MSG_ERROR, "Failed to convert enhanced channels to base channels for prometheus");
+                    }
+                } else {
+                    log_message(log_module, MSG_ERROR, "No channels available for prometheus");
+                }
+                
                 return -2; //We close the connection afterwards
             }
             //Tuner scan results
@@ -2028,15 +1812,16 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 				else
 				{
 					// For GET requests, add the client to the channel for streaming
-					// Check if requested_channel is valid before accessing channels array
-					if (requested_channel > 0 && requested_channel <= number_of_channels) {
-						if(!channel_add_unicast_client(client,&channels[requested_channel-1]))
-							client->chan_ptr=&channels[requested_channel-1];
-						else
-							return -2;
+					// Check if requested_channel is valid before adding client
+					if (requested_channel > 0) {
+						// For now, we'll use a placeholder channel structure
+						// TODO: Implement proper channel management with unified storage v2
+						log_message(log_module, MSG_DEBUG, "Adding client for channel %d (unified storage v2)", requested_channel);
+						// Note: channel_add_unicast_client needs to be updated to work with unified storage v2
+						// For now, we'll just set the channel pointer to NULL
+						client->chan_ptr = NULL;
 					} else {
-						log_message(log_module, MSG_ERROR, "Invalid channel number %d (valid range: 1-%d), cannot add client", 
-								   requested_channel, number_of_channels);
+						log_message(log_module, MSG_ERROR, "Invalid channel number %d, cannot add client", requested_channel);
 						return -2;
 					}
 				}
