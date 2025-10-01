@@ -160,15 +160,16 @@ static mumudvb_channel_t *find_channel_by_number(int channel_number,
  */
 static double get_channel_frequency(mumudvb_channel_t *channel)
 {
-    if (!channel || !global_unified_system || !global_unified_system->unified_storage_v2) {
+    if (!channel || !global_unified_system) {
         return 0.0;
     }
     
-    // Look up frequency in unified storage
-    double frequency = 0.0;
-    if (get_channel_frequency_from_storage(global_unified_system->unified_storage_v2, 
-                                          channel, &frequency) == 0) {
-        return frequency;
+    // For now, we'll use a simple approach - get frequency from the first available card
+    // TODO: Implement proper frequency lookup from unified storage
+    for (int i = 0; i < global_unified_system->num_cards; i++) {
+        if (global_unified_system->cards[i].current_freq > 0) {
+            return global_unified_system->cards[i].current_freq;
+        }
     }
     
     return 0.0;
@@ -193,8 +194,8 @@ static int find_available_card_for_frequency(double frequency, int exclude_card_
         }
         
         // Check if card is already tuned to this frequency
-        if (global_unified_system->cards[i].current_frequency == frequency &&
-            global_unified_system->cards[i].is_tuned) {
+        if (global_unified_system->cards[i].current_freq == frequency &&
+            global_unified_system->cards[i].in_use) {
             log_message(log_module, MSG_DEBUG, "Card %d already tuned to frequency %.0f Hz", 
                        global_unified_system->cards[i].card_id, frequency);
             return global_unified_system->cards[i].card_id;
@@ -208,8 +209,7 @@ static int find_available_card_for_frequency(double frequency, int exclude_card_
         }
         
         // Check if card is available and not in use
-        if (!global_unified_system->cards[i].is_in_use && 
-            !global_unified_system->cards[i].is_tuned) {
+        if (!global_unified_system->cards[i].in_use) {
             log_message(log_module, MSG_DEBUG, "Card %d available for frequency %.0f Hz", 
                        global_unified_system->cards[i].card_id, frequency);
             return global_unified_system->cards[i].card_id;
@@ -235,9 +235,8 @@ static int reserve_card_for_frequency(int card_id, double frequency)
     // Find the card
     for (int i = 0; i < global_unified_system->num_cards; i++) {
         if (global_unified_system->cards[i].card_id == card_id) {
-            global_unified_system->cards[i].is_in_use = 1;
-            global_unified_system->cards[i].current_frequency = frequency;
-            global_unified_system->cards[i].is_tuned = 1;
+            global_unified_system->cards[i].in_use = 1;
+            global_unified_system->cards[i].current_freq = frequency;
             log_message(log_module, MSG_INFO, "Reserved card %d for frequency %.0f Hz", 
                        card_id, frequency);
             return 0;
