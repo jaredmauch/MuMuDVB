@@ -73,7 +73,7 @@ void autoconf_nit_need_update(auto_p_t *auto_p, unsigned char *buf)
 /** @brief Read the network information table (cf EN 300 468)
  *
  */
-int autoconf_read_nit(auto_p_t *auto_p, mumu_chan_p_t *chan_p)
+int autoconf_read_nit(auto_p_t *auto_p, mumu_chan_p_t *chan_p, int card_id)
 {
 	mumudvb_ts_packet_t *nit_mumu;
 	unsigned char *buf=NULL;
@@ -108,7 +108,7 @@ int autoconf_read_nit(auto_p_t *auto_p, mumu_chan_p_t *chan_p)
 		auto_p->nit_version=header->version_number;
 		auto_p->nit_all_sections_seen=0;
 		if(auto_p->nit_version!=-1)
-			log_message( log_module, MSG_INFO,"The NIT version changed, channels number could have changed !");
+			log_message( log_module, MSG_INFO,"card-%d The NIT version changed, channels number could have changed !", card_id);
 
 	}
 	//we store the section

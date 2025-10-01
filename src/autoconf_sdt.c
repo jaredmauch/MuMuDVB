@@ -90,7 +90,7 @@ void autoconf_sdt_need_update(auto_p_t *auto_p, unsigned char *buf)
  * This table is used to find the name of the services versus the service number
  * This function will fill the names and other info in the services
   */
-int autoconf_read_sdt(auto_p_t *auto_p, mumu_chan_p_t *chan_p)
+int autoconf_read_sdt(auto_p_t *auto_p, mumu_chan_p_t *chan_p, int card_id)
 {
 	int delta;
 	sdt_t *header;
@@ -125,7 +125,7 @@ int autoconf_read_sdt(auto_p_t *auto_p, mumu_chan_p_t *chan_p)
 		auto_p->sdt_version=header->version_number;
 		auto_p->sdt_all_sections_seen=0;
 		if(auto_p->sdt_version!=-1)
-			log_message( log_module, MSG_INFO,"The SDT version changed, channels description have changed");
+			log_message( log_module, MSG_INFO,"card-%d The SDT version changed, channels description have changed", card_id);
 
 	}
 	//we store the section
