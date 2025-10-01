@@ -1993,6 +1993,13 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
                 unicast_send_tuner_scan_results(client->Socket);
                 return -2; //We close the connection afterwards
             }
+            //Card status
+            else if(strstr(client->buffer +pos ,"/card_status.html")==(client->buffer +pos))
+            {
+                log_message( log_module, MSG_DETAIL,"HTTP request for card status\n");
+                unicast_send_card_status(client->Socket);
+                return -2; //We close the connection afterwards
+            }
 			//Not implemented path --> 404
 			else
 				err404=1;
@@ -2574,6 +2581,7 @@ unicast_send_index_page (int Socket)
 	unicast_reply_write(reply, "<br>  <a href=\"/monitor/state.json\">Server state : channel list, pids, traffic (json)</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br>  <a href=\"/monitor/EIT.json\">Contents of the EIT tables (json)</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br>  <a href=\"/tuner_scan_results.html\">Tuner Scan Results</a><br><br>\r\n");
+	unicast_reply_write(reply, "<br>  <a href=\"/card_status.html\">Card Status</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br>  <a href=\"/cam/menu.xml\">CAM menu</a><br><br>\r\n");
 	unicast_reply_write(reply, "<br> make an action on the cam menu : /cam/action.xml?key=<br><br>\r\n");
 
@@ -2959,6 +2967,259 @@ int unicast_send_tuner_scan_results(int Socket)
 	unicast_reply_send(reply, Socket, 200, "text/html");
 	
 	free(results);
+	unicast_reply_free(reply);
+	return 0;
+}
+
+/** @brief Send card status as HTML table
+ * @param Socket the socket on which the information have to be sent
+ */
+int unicast_send_card_status(int Socket)
+{
+	struct unicast_reply* reply = unicast_reply_init();
+	if (NULL == reply) {
+		log_message(log_module, MSG_INFO, "Error when creating the HTTP reply\n");
+		return -1;
+	}
+
+	// Get refresh delay from configuration (default: 5 seconds for real-time monitoring)
+	extern unicast_parameters_t *global_unicast_params;
+	int refresh_delay = 5; // Default fallback for real-time monitoring
+	if (global_unicast_params) {
+		refresh_delay = global_unicast_params->scan_results_refresh_delay;
+		if (refresh_delay > 30) refresh_delay = 5; // Cap at 30 seconds for card status
+	}
+	
+	// Start HTML response
+	unicast_reply_write(reply, "<html><head><title>MuMuDVB - Card Status</title>");
+	unicast_reply_write(reply, "<meta http-equiv=\"refresh\" content=\"%d\">", refresh_delay);
+	unicast_reply_write(reply, "<style>");
+	unicast_reply_write(reply, "table { border-collapse: collapse; width: 100%; margin: 20px 0; }");
+	unicast_reply_write(reply, "th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }");
+	unicast_reply_write(reply, "th { background-color: #f2f2f2; font-weight: bold; }");
+	unicast_reply_write(reply, ".available { background-color: #d4edda; }");
+	unicast_reply_write(reply, ".busy { background-color: #f8d7da; }");
+	unicast_reply_write(reply, ".tuning { background-color: #fff3cd; }");
+	unicast_reply_write(reply, ".streaming { background-color: #d1ecf1; }");
+	unicast_reply_write(reply, ".idle { background-color: #e2e3e5; }");
+	unicast_reply_write(reply, ".unknown { background-color: #f8f9fa; }");
+	unicast_reply_write(reply, ".status-indicator { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 5px; }");
+	unicast_reply_write(reply, ".green { background-color: #28a745; }");
+	unicast_reply_write(reply, ".red { background-color: #dc3545; }");
+	unicast_reply_write(reply, ".yellow { background-color: #ffc107; }");
+	unicast_reply_write(reply, ".blue { background-color: #17a2b8; }");
+	unicast_reply_write(reply, ".gray { background-color: #6c757d; }");
+	unicast_reply_write(reply, "</style></head><body>");
+	
+	unicast_reply_write(reply, "<h1>MuMuDVB Card Status</h1>");
+	unicast_reply_write(reply, "<p>Real-time card utilization and status monitoring</p>");
+	
+	// Get card utilization data
+	char json_buffer[8192];
+	int json_length = generate_card_utilization_json(json_buffer, sizeof(json_buffer));
+	
+	if (json_length <= 0) {
+		unicast_reply_write(reply, "<div style=\"background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 10px; margin: 10px 0; border-radius: 5px;\">");
+		unicast_reply_write(reply, "<h4>⚠️ Error</h4>");
+		unicast_reply_write(reply, "<p>Failed to generate card utilization data. This might indicate:</p>");
+		unicast_reply_write(reply, "<ul>");
+		unicast_reply_write(reply, "<li>Card utilization tracking is not initialized</li>");
+		unicast_reply_write(reply, "<li>No cards are currently registered in the system</li>");
+		unicast_reply_write(reply, "<li>There's an internal error in the card tracking system</li>");
+		unicast_reply_write(reply, "</ul>");
+		unicast_reply_write(reply, "</div>");
+	} else {
+		// Parse JSON and create HTML table
+		unicast_reply_write(reply, "<table>");
+		unicast_reply_write(reply, "<tr>");
+		unicast_reply_write(reply, "<th>Card ID</th>");
+		unicast_reply_write(reply, "<th>Status</th>");
+		unicast_reply_write(reply, "<th>Usage Type</th>");
+		unicast_reply_write(reply, "<th>Frequency</th>");
+		unicast_reply_write(reply, "<th>Clients</th>");
+		unicast_reply_write(reply, "<th>Tuning</th>");
+		unicast_reply_write(reply, "<th>Streaming</th>");
+		unicast_reply_write(reply, "<th>Last Activity</th>");
+		unicast_reply_write(reply, "<th>Duration</th>");
+		unicast_reply_write(reply, "</tr>");
+		
+		// Simple JSON parsing for card utilization
+		char *pos = json_buffer;
+		int card_count = 0;
+		
+		// Find the card_utilization array
+		char *array_start = strstr(pos, "\"card_utilization\": [");
+		if (array_start) {
+			pos = array_start + strlen("\"card_utilization\": [");
+			
+			while (*pos && *pos != ']') {
+				// Skip whitespace and commas
+				while (*pos && (*pos == ' ' || *pos == '\n' || *pos == '\r' || *pos == '\t' || *pos == ',')) pos++;
+				if (*pos == ']') break;
+				
+				// Look for card object
+				if (*pos == '{') {
+					card_count++;
+					
+					// Parse card data
+					int card_id = -1;
+					char usage_type[32] = "unknown";
+					double frequency = 0.0;
+					int total_clients = 0;
+					int is_tuning = 0;
+					int is_streaming = 0;
+					long last_activity = 0;
+					long tuning_duration = 0;
+					long streaming_duration = 0;
+					
+					// Simple field extraction
+					char *field_start = strstr(pos, "\"card_id\":");
+					if (field_start) {
+						sscanf(field_start, "\"card_id\": %d", &card_id);
+					}
+					
+					field_start = strstr(pos, "\"usage_type\":");
+					if (field_start) {
+						char *quote_start = strchr(field_start, '"');
+						if (quote_start) {
+							quote_start++;
+							char *quote_end = strchr(quote_start, '"');
+							if (quote_end) {
+								int len = quote_end - quote_start;
+								if (len < sizeof(usage_type)) {
+									strncpy(usage_type, quote_start, len);
+									usage_type[len] = '\0';
+								}
+							}
+						}
+					}
+					
+					field_start = strstr(pos, "\"current_frequency\":");
+					if (field_start) {
+						sscanf(field_start, "\"current_frequency\": %lf", &frequency);
+					}
+					
+					field_start = strstr(pos, "\"total_clients\":");
+					if (field_start) {
+						sscanf(field_start, "\"total_clients\": %d", &total_clients);
+					}
+					
+					field_start = strstr(pos, "\"is_tuning\":");
+					if (field_start) {
+						sscanf(field_start, "\"is_tuning\": %d", &is_tuning);
+					}
+					
+					field_start = strstr(pos, "\"is_streaming\":");
+					if (field_start) {
+						sscanf(field_start, "\"is_streaming\": %d", &is_streaming);
+					}
+					
+					field_start = strstr(pos, "\"last_activity\":");
+					if (field_start) {
+						sscanf(field_start, "\"last_activity\": %ld", &last_activity);
+					}
+					
+					field_start = strstr(pos, "\"tuning_duration\":");
+					if (field_start) {
+						sscanf(field_start, "\"tuning_duration\": %ld", &tuning_duration);
+					}
+					
+					field_start = strstr(pos, "\"streaming_duration\":");
+					if (field_start) {
+						sscanf(field_start, "\"streaming_duration\": %ld", &streaming_duration);
+					}
+					
+					// Determine status and CSS class
+					const char *status_text = "Unknown";
+					const char *status_class = "unknown";
+					const char *indicator_class = "gray";
+					
+					if (strcmp(usage_type, "idle") == 0) {
+						status_text = "Idle";
+						status_class = "idle";
+						indicator_class = "gray";
+					} else if (is_streaming) {
+						status_text = "Streaming";
+						status_class = "streaming";
+						indicator_class = "blue";
+					} else if (is_tuning) {
+						status_text = "Tuning";
+						status_class = "tuning";
+						indicator_class = "yellow";
+					} else if (total_clients > 0) {
+						status_text = "Busy";
+						status_class = "busy";
+						indicator_class = "red";
+					} else {
+						status_text = "Available";
+						status_class = "available";
+						indicator_class = "green";
+					}
+					
+					// Format time
+					char time_str[64] = "Never";
+					if (last_activity > 0) {
+						time_t now = time(NULL);
+						long diff = now - last_activity;
+						if (diff < 60) {
+							snprintf(time_str, sizeof(time_str), "%lds ago", diff);
+						} else if (diff < 3600) {
+							snprintf(time_str, sizeof(time_str), "%ldm ago", diff / 60);
+						} else {
+							snprintf(time_str, sizeof(time_str), "%ldh ago", diff / 3600);
+						}
+					}
+					
+					// Format duration
+					char duration_str[64] = "-";
+					if (is_tuning && tuning_duration > 0) {
+						snprintf(duration_str, sizeof(duration_str), "%lds", tuning_duration);
+					} else if (is_streaming && streaming_duration > 0) {
+						snprintf(duration_str, sizeof(duration_str), "%lds", streaming_duration);
+					}
+					
+					// Add table row
+					unicast_reply_write(reply, "<tr class=\"%s\">", status_class);
+					unicast_reply_write(reply, "<td><strong>%d</strong></td>", card_id);
+					unicast_reply_write(reply, "<td><span class=\"status-indicator %s\"></span>%s</td>", indicator_class, status_text);
+					unicast_reply_write(reply, "<td>%s</td>", usage_type);
+					unicast_reply_write(reply, "<td>%.1f MHz</td>", frequency / 1000000.0);
+					unicast_reply_write(reply, "<td>%d</td>", total_clients);
+					unicast_reply_write(reply, "<td>%s</td>", is_tuning ? "Yes" : "No");
+					unicast_reply_write(reply, "<td>%s</td>", is_streaming ? "Yes" : "No");
+					unicast_reply_write(reply, "<td>%s</td>", time_str);
+					unicast_reply_write(reply, "<td>%s</td>", duration_str);
+					unicast_reply_write(reply, "</tr>");
+					
+					// Find next card object
+					pos = strchr(pos, '}');
+					if (pos) pos++;
+				} else {
+					pos++;
+				}
+			}
+		}
+		
+		unicast_reply_write(reply, "</table>");
+		
+		if (card_count == 0) {
+			unicast_reply_write(reply, "<div style=\"background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin: 10px 0; border-radius: 5px;\">");
+			unicast_reply_write(reply, "<h4>ℹ️ No Cards Found</h4>");
+			unicast_reply_write(reply, "<p>No cards are currently registered in the card utilization system. This might indicate:</p>");
+			unicast_reply_write(reply, "<ul>");
+			unicast_reply_write(reply, "<li>The system is still initializing</li>");
+			unicast_reply_write(reply, "<li>No cards have been used yet</li>");
+			unicast_reply_write(reply, "<li>There's an issue with card detection</li>");
+			unicast_reply_write(reply, "</ul>");
+			unicast_reply_write(reply, "</div>");
+		}
+	}
+	
+	unicast_reply_write(reply, "<p><a href=\"/\">Back to main page</a> | <a href=\"/tuner_scan_results.html\">Tuner Scan Results</a></p>");
+	unicast_reply_write(reply, "</body></html>");
+	
+	unicast_reply_send(reply, Socket, 200, "text/html");
+	
 	unicast_reply_free(reply);
 	return 0;
 }

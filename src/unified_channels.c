@@ -1285,6 +1285,9 @@ void register_card_usage(int card_id, double frequency, const char *usage_type)
             // New card
             card_utilization[idx].card_id = card_id;
             card_utilization_count++;
+        } else if (strcmp(card_utilization[idx].usage_type, "idle") == 0) {
+            // Card was idle, reactivate it
+            log_message(log_module, MSG_DEBUG, "Reactivating idle card %d for %s", card_id, usage_type);
         }
         
         card_utilization[idx].current_frequency = frequency;
@@ -1319,6 +1322,8 @@ void unregister_card_usage(int card_id, const char *usage_type)
                 card_utilization[i].is_tuning = 0;
             } else if (strcmp(usage_type, "streaming") == 0) {
                 card_utilization[i].is_streaming = 0;
+            } else if (strcmp(usage_type, "parallel_system_tuning") == 0) {
+                card_utilization[i].is_tuning = 0; // parallel_system_tuning also sets is_tuning
             }
             
             // If card is completely idle, mark as unused
@@ -1326,6 +1331,9 @@ void unregister_card_usage(int card_id, const char *usage_type)
                 card_utilization[i].total_clients == 0) {
                 strcpy(card_utilization[i].usage_type, "idle");
                 card_utilization[i].current_frequency = 0.0;
+                // Reset card_id to -1 to mark slot as unused
+                card_utilization[i].card_id = -1;
+                card_utilization_count--;
             }
             
             pthread_mutex_unlock(&card_utilization[i].utilization_mutex);

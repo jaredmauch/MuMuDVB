@@ -786,9 +786,13 @@ static int test_card_frequency_parallel(int card_id, double frequency, card_freq
     
     log_message(log_module, MSG_INFO, "card-%d successfully opened frontend (fd=%d)", card_id, fd_frontend);
     
-    // Register card usage before tuning
-    register_card_usage(card_id, frequency, "parallel_system_tuning");
-    log_message(log_module, MSG_INFO, "card-%d registered for parallel system tuning", card_id);
+    // Register card usage before tuning (check if already registered to avoid double registration)
+    if (!is_card_in_use(card_id)) {
+        register_card_usage(card_id, frequency, "parallel_system_tuning");
+        log_message(log_module, MSG_INFO, "card-%d registered for parallel system tuning", card_id);
+    } else {
+        log_message(log_module, MSG_DEBUG, "card-%d already registered, skipping registration", card_id);
+    }
     
     // Check if card is now marked as in use
     int card_in_use_after_register = is_card_in_use(card_id);
@@ -1363,12 +1367,14 @@ void *card_worker_thread(void *arg)
         // Check for shutdown before each frequency test
         if (get_interrupted()) {
             log_message(log_module, MSG_INFO, "card-%d worker shutting down due to interrupt signal", card_id);
+            unregister_card_usage(card_id, "parallel_system_tuning");
             return NULL;
         }
         
         // Additional interrupt check before starting frequency test
         if (get_interrupted()) {
             log_message(log_module, MSG_INFO, "card-%d worker interrupted before frequency test", card_id);
+            unregister_card_usage(card_id, "parallel_system_tuning");
             return NULL;
         }
         
@@ -1376,6 +1382,7 @@ void *card_worker_thread(void *arg)
         if (global_parallel_manager->shutdown_requested) {
             pthread_mutex_unlock(&global_parallel_manager->shutdown_mutex);
             log_message(log_module, MSG_INFO, "card-%d worker shutting down", card_id);
+            unregister_card_usage(card_id, "parallel_system_tuning");
             return NULL;
         }
         pthread_mutex_unlock(&global_parallel_manager->shutdown_mutex);
@@ -1399,6 +1406,7 @@ void *card_worker_thread(void *arg)
         } else {
             // Fallback to interruptible sleep if timing tracker not available
             if (event_sleep_interruptible(MS_TO_US(TIMING_CARD_TEST_DELAY_MS)) < 0) {
+                unregister_card_usage(card_id, "parallel_system_tuning");
                 return NULL; // Interrupted
             }
         }
@@ -1408,6 +1416,7 @@ void *card_worker_thread(void *arg)
         card_frequency_result_t *result = malloc(sizeof(card_frequency_result_t));
         if (!result) {
             log_message(log_module, MSG_ERROR, "card-%d failed to allocate memory for result structure", card_id);
+            unregister_card_usage(card_id, "parallel_system_tuning");
             return NULL;
         }
         
@@ -1543,6 +1552,10 @@ void *card_worker_thread(void *arg)
                     log_message(log_module, MSG_INFO, "card-%d rotated to idle, card %d (adapter %d) now active", 
                                card_id, next_active_card, unified_system->cards[next_active_card].card_id);
                     
+                    // Clean up card usage for the card that's becoming idle
+                    unregister_card_usage(card_id, "parallel_system_tuning");
+                    log_message(log_module, MSG_INFO, "card-%d unregistered from parallel system tuning", card_id);
+                    
                     // The current thread should now become idle and wait
                     // The next active card will be handled by a new thread or existing thread
                     // For now, we'll continue with the current thread but mark it as idle
@@ -1630,6 +1643,10 @@ void *card_worker_thread(void *arg)
             }
         }
     }
+    
+    // Clean up card usage before thread exits
+    unregister_card_usage(card_id, "parallel_system_tuning");
+    log_message(log_module, MSG_INFO, "card-%d unregistered from parallel system tuning (thread exit)", card_id);
     
     log_message(log_module, MSG_INFO, "card-%d worker thread completed", card_id);
     return NULL;
@@ -1771,11 +1788,14 @@ static int rotate_idle_card(int current_card_idx)
         return -1; // No idle cards to rotate with
     }
     
-    // Get the next idle card
+    // Get the next idle card and pop it atomically
     int next_idle_card = global_parallel_manager->idle_card_stack[global_parallel_manager->idle_stack_top];
+    global_parallel_manager->idle_stack_top--;
     
     // Push current card onto idle stack
     if (global_parallel_manager->idle_stack_top >= global_parallel_manager->idle_stack_size - 1) {
+        // Restore the popped card if we can't push
+        global_parallel_manager->idle_stack_top++;
         pthread_mutex_unlock(&global_parallel_manager->idle_rotation_mutex);
         log_message(log_module, MSG_ERROR, "Idle card stack is full, cannot rotate");
         return -1;
@@ -1783,9 +1803,6 @@ static int rotate_idle_card(int current_card_idx)
     
     global_parallel_manager->idle_stack_top++;
     global_parallel_manager->idle_card_stack[global_parallel_manager->idle_stack_top] = current_card_idx;
-    
-    // Pop the next idle card (it becomes active)
-    global_parallel_manager->idle_stack_top--;
     
     log_message(log_module, MSG_INFO, "Card rotation: card %d becomes idle, card %d becomes active", 
                 current_card_idx, next_idle_card);
