@@ -4,6 +4,7 @@ config.*
 /aclocal.m4
 /compile
 /configure
+/configure~
 /depcomp
 /missing
 /autom4te.cache
