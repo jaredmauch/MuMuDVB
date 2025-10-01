@@ -1391,6 +1391,7 @@ int check_status(int fd_frontend,int type,uint32_t lo_frequency, int display_str
 #ifndef DISABLE_DVB_API
 	int32_t strength;
 	fe_status_t festatus;
+	fe_status_t previous_festatus = 0; // Track previous status to avoid duplicate logging
 	fe_status_t highest_festatus = 0; // Store the highest level of FE flags
 	time_t start_time = time(NULL);
 	const int LOCK_TIMEOUT_SECONDS = 15;
@@ -1414,38 +1415,44 @@ int check_status(int fd_frontend,int type,uint32_t lo_frequency, int display_str
 			highest_festatus = festatus;
 		}
 		
-		if(display_strength)
-		{
-			strength=0;
-			int strength_dbm = 0;
-			int snr = 0;
-			int snr_db = 0;
-			char status_str[256];
-			
-			if(ioctl(fd_frontend,FE_READ_SIGNAL_STRENGTH,&strength) >= 0)
+		// Only print status if it has changed
+		if (festatus != previous_festatus) {
+			if(display_strength)
 			{
-				strength_dbm = convert_strength_to_dbm(strength);
+				strength=0;
+				int strength_dbm = 0;
+				int snr = 0;
+				int snr_db = 0;
+				char status_str[256];
+				
+				if(ioctl(fd_frontend,FE_READ_SIGNAL_STRENGTH,&strength) >= 0)
+				{
+					strength_dbm = convert_strength_to_dbm(strength);
+				}
+				if(ioctl(fd_frontend,FE_READ_SNR,&snr) >= 0)
+				{
+					snr_db = convert_snr_to_db(snr);
+				}
+				
+				get_status_string(festatus, status_str, sizeof(status_str));
+				
+				log_message( log_module,  MSG_INFO, "card-%d %s  Strength: %10d  Strength (dBm): %10d  SNR: %10d  SNR (dB): %10d\n", 
+							card_id, status_str, strength, strength_dbm, snr, snr_db);
 			}
-			if(ioctl(fd_frontend,FE_READ_SNR,&snr) >= 0)
+			else
 			{
-				snr_db = convert_snr_to_db(snr);
+				// Get current frequency from frontend parameters for status display
+				uint32_t current_freq = 0;
+				struct dvb_frontend_parameters temp_params;
+				int status = ioctl(fd_frontend, FE_GET_FRONTEND, &temp_params);
+				if (status >= 0) {
+					current_freq = temp_params.frequency;
+				}
+				print_status(festatus, card_id, current_freq);
 			}
 			
-			get_status_string(festatus, status_str, sizeof(status_str));
-			
-			log_message( log_module,  MSG_INFO, "card-%d %s  Strength: %10d  Strength (dBm): %10d  SNR: %10d  SNR (dB): %10d\n", 
-						card_id, status_str, strength, strength_dbm, snr, snr_db);
-		}
-		else
-		{
-			// Get current frequency from frontend parameters for status display
-			uint32_t current_freq = 0;
-			struct dvb_frontend_parameters temp_params;
-			int status = ioctl(fd_frontend, FE_GET_FRONTEND, &temp_params);
-			if (status >= 0) {
-				current_freq = temp_params.frequency;
-			}
-			print_status(festatus, card_id, current_freq);
+			// Update previous status for next iteration
+			previous_festatus = festatus;
 		}
 		
 		// Check for 15-second timeout
