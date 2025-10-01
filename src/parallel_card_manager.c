@@ -1518,35 +1518,8 @@ void *card_worker_thread(void *arg)
         // Free the allocated result structure
         free(result);
         
-        // Implement idle card rotation after each frequency test
-        if (unified_system->num_cards > 1) {
-            // Find the card index for this card_id
-            int card_idx = -1;
-            for (int i = 0; i < unified_system->num_cards; i++) {
-                if (unified_system->cards[i].card_id == card_id) {
-                    card_idx = i;
-                    break;
-                }
-            }
-            
-            if (card_idx >= 0) {
-                // Try to rotate with an idle card
-                int next_active_card = rotate_idle_card(card_idx);
-                if (next_active_card >= 0) {
-                    log_message(log_module, MSG_INFO, "card-%d rotated to idle, card %d (adapter %d) now active", 
-                               card_id, next_active_card, unified_system->cards[next_active_card].card_id);
-                    
-                    // Clean up card usage for the card that's becoming idle
-                    unregister_card_usage(card_id, "parallel_system_tuning");
-                    log_message(log_module, MSG_INFO, "card-%d unregistered from parallel system tuning", card_id);
-                    
-                    // The current thread should now become idle and wait
-                    // The next active card will be handled by a new thread or existing thread
-                    // For now, we'll continue with the current thread but mark it as idle
-                    log_message(log_module, MSG_INFO, "card-%d becoming idle after frequency test", card_id);
-                }
-            }
-        }
+        // All cards now have their own threads, so no rotation needed
+        // Each card thread will handle its own frequency testing
         
         // Wait for next frequency test timing event instead of usleep
         if (global_timing_tracker) {
@@ -1807,25 +1780,17 @@ int start_parallel_card_scanning(void)
     
     unified_channel_system_t *unified_system = global_parallel_manager->unified_system;
     
-    // With rotating idle card system, create threads for all cards except one
-    // The idle card will rotate using LIFO stack
+    // Create threads for ALL cards - each card will coordinate with others
+    // This ensures all cards get used for scanning
     int threads_to_create = unified_system->num_cards;
-    if (unified_system->num_cards > 1) {
-        threads_to_create = unified_system->num_cards - 1; // Leave one card idle initially
-        log_message(log_module, MSG_INFO, "Starting parallel scanning with %d card threads (1 card idle, will rotate)", 
-                    threads_to_create);
-        
-        // Initialize idle card stack with all cards, then pop one for initial scanning
-        for (int i = 0; i < unified_system->num_cards; i++) {
-            push_idle_card(i);
-        }
-        // Pop one card to make it available for scanning
-        int initial_idle_card = pop_idle_card();
-        log_message(log_module, MSG_INFO, "Initial idle card: %d (adapter %d)", 
-                    initial_idle_card, unified_system->cards[initial_idle_card].card_id);
-    } else {
-        log_message(log_module, MSG_INFO, "Only 1 card available, using it for scanning (no idle card rotation)");
+    log_message(log_module, MSG_INFO, "Starting parallel scanning with %d card threads (all cards active)", 
+                threads_to_create);
+    
+    // Initialize idle card stack for coordination (but all cards will have threads)
+    for (int i = 0; i < unified_system->num_cards; i++) {
+        push_idle_card(i);
     }
+    log_message(log_module, MSG_INFO, "All %d cards initialized for parallel scanning", unified_system->num_cards);
     
     global_parallel_manager->scan_in_progress = 1;
     global_parallel_manager->current_result_count = 0;
@@ -1835,13 +1800,8 @@ int start_parallel_card_scanning(void)
     pthread_mutex_lock(&global_parallel_manager->shutdown_mutex);
     
     int thread_count = 0;
-    for (int card_idx = 0; card_idx < unified_system->num_cards && thread_count < threads_to_create; card_idx++) {
-        // Skip the idle card (it's at the top of the stack)
-        int idle_card = peek_idle_card();
-        if (idle_card == card_idx) {
-            log_message(log_module, MSG_DEBUG, "Skipping card %d (currently idle)", card_idx);
-            continue;
-        }
+    for (int card_idx = 0; card_idx < unified_system->num_cards; card_idx++) {
+        // Create thread for all cards - no skipping
         
         int *card_id = malloc(sizeof(int));
         if (!card_id) {
