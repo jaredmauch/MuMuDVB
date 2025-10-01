@@ -1506,17 +1506,23 @@ void *card_worker_thread(void *arg)
     pthread_mutex_lock(&global_parallel_manager->results_mutex);
     global_parallel_manager->cards_completed_initial_scan++;
     
-    log_message(log_module, MSG_INFO, "card-%d completed initial scan (%d/%d cards done)", 
-                card_id, global_parallel_manager->cards_completed_initial_scan, 
-                unified_system->num_cards);
+    int expected_threads = unified_system->num_cards;
+    if (unified_system->scan_limit > 0 && unified_system->scan_limit < unified_system->num_cards) {
+        expected_threads = unified_system->scan_limit;
+    }
     
-    // Check if all cards have completed their initial scan
-    if (global_parallel_manager->cards_completed_initial_scan >= unified_system->num_cards) {
+    log_message(log_module, MSG_INFO, "card-%d completed initial scan (%d/%d active scan threads done)", 
+                card_id, global_parallel_manager->cards_completed_initial_scan, expected_threads);
+    
+    // Check if all active scan threads have completed their initial scan
+    // expected_threads already calculated above
+    
+    if (global_parallel_manager->cards_completed_initial_scan >= expected_threads) {
         global_parallel_manager->initial_scan_complete = 1;
         global_parallel_manager->scan_in_progress = 0;
         pthread_cond_signal(&global_parallel_manager->scan_complete);
-        log_message(log_module, MSG_INFO, "Initial parallel scan completed - all %d cards finished testing", 
-                    unified_system->num_cards);
+        log_message(log_module, MSG_INFO, "Initial parallel scan completed - all %d active scan threads finished testing", 
+                    expected_threads);
     }
     pthread_mutex_unlock(&global_parallel_manager->results_mutex);
     
