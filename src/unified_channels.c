@@ -45,6 +45,9 @@
 static int test_card_frequency(unified_card_t *card, double frequency);
 static void cleanup_card_availability_tracking(void);
 
+// External function declarations
+extern void register_thread(pthread_t thread, const char *name, void *(*cleanup_func)(void *), void *cleanup_arg);
+
 static char *log_module = "Unified: ";
 
 /** @brief Global event timing tracker for unified channels */
@@ -1163,9 +1166,11 @@ typedef struct {
     int is_available; // 1 = available for new frequencies, 0 = in use
     double current_frequency; // Current frequency being tuned (0.0 if idle)
     int client_count; // Number of clients using this card
+    int is_streaming; // 1 = actively streaming data, 0 = idle
     time_t last_activity; // Last time this card was active
     pthread_mutex_t card_mutex; // Mutex for thread-safe access
 } card_availability_t;
+
 
 // Structure to track detailed card utilization
 typedef struct {
@@ -1727,6 +1732,7 @@ static int init_card_availability_tracking(unified_channel_system_t *unified_sys
         card_availability[i].is_available = 1;
         card_availability[i].current_frequency = 0.0;
         card_availability[i].client_count = 0;
+        card_availability[i].is_streaming = 0;
         card_availability[i].last_activity = 0;
         
         if (pthread_mutex_init(&card_availability[i].card_mutex, NULL) != 0) {
@@ -2137,6 +2143,226 @@ static void show_feasible_cards_for_frequency(double frequency)
     }
 }
 
+/** @brief Start data streaming thread for a card/frequency combination using existing infrastructure
+ * @param card_id The card ID to start streaming for
+ * @param frequency The frequency being streamed
+ * @return 0 on success, -1 on error
+ */
+int start_card_data_streaming(int card_id, double frequency)
+{
+    log_message(log_module, MSG_INFO, "Starting data streaming for card %d on frequency %.0f Hz using existing infrastructure", 
+                card_id, frequency);
+    
+    // Update card utilization tracking to mark as streaming
+    pthread_mutex_lock(&utilization_global_mutex);
+    
+    // Find or create card utilization entry
+    int card_idx = -1;
+    for (int i = 0; i < 16; i++) {
+        if (card_utilization[i].card_id == card_id) {
+            card_idx = i;
+            break;
+        } else if (card_utilization[i].card_id == -1 && card_idx == -1) {
+            card_idx = i; // Use first empty slot
+        }
+    }
+    
+    if (card_idx >= 0) {
+        if (card_utilization[card_idx].card_id == -1) {
+            // New entry
+            card_utilization[card_idx].card_id = card_id;
+            card_utilization[card_idx].current_frequency = frequency;
+            card_utilization[card_idx].total_clients = 1; // One client requesting this
+            card_utilization[card_idx].is_tuning = 0;
+            card_utilization[card_idx].is_streaming = 1;
+            strcpy(card_utilization[card_idx].usage_type, "unicast_client");
+            card_utilization[card_idx].last_activity = time(NULL);
+            card_utilization[card_idx].streaming_start_time = time(NULL);
+            card_utilization_count++;
+        } else {
+            // Existing entry - update
+            card_utilization[card_idx].current_frequency = frequency;
+            card_utilization[card_idx].total_clients++;
+            card_utilization[card_idx].is_streaming = 1;
+            card_utilization[card_idx].last_activity = time(NULL);
+            if (card_utilization[card_idx].streaming_start_time == 0) {
+                card_utilization[card_idx].streaming_start_time = time(NULL);
+            }
+        }
+    }
+    
+    pthread_mutex_unlock(&utilization_global_mutex);
+    
+    if (card_idx < 0) {
+        log_message(log_module, MSG_ERROR, "No available card utilization slot for card %d", card_id);
+        return -1;
+    }
+    
+    // Check if streaming is already active for this card/frequency in card availability
+    for (int i = 0; i < card_availability_count; i++) {
+        if (card_availability[i].card_id == card_id) {
+            pthread_mutex_lock(&card_availability[i].card_mutex);
+            
+            if (card_availability[i].is_streaming) {
+                pthread_mutex_unlock(&card_availability[i].card_mutex);
+                log_message(log_module, MSG_INFO, "Card %d already streaming on frequency %.0f Hz", 
+                           card_id, frequency);
+                return 0; // Already streaming
+            }
+            
+            // Mark as streaming
+            card_availability[i].is_streaming = 1;
+            card_availability[i].current_frequency = frequency;
+            card_availability[i].client_count = 1;
+            card_availability[i].last_activity = time(NULL);
+            pthread_mutex_unlock(&card_availability[i].card_mutex);
+            break;
+        }
+    }
+    
+    // Use existing card reading infrastructure
+    // We need to set up the card thread parameters similar to the main system
+    // Create a local card buffer for this specific card
+    card_buffer_t card_buffer;
+    memset(&card_buffer, 0, sizeof(card_buffer_t));
+    card_buffer.dvr_buffer_size = 100; // Default buffer size
+    card_buffer.max_thread_buffer_size = 100;
+    card_buffer.write_buffer_size = card_buffer.max_thread_buffer_size * TS_PACKET_SIZE;
+    card_buffer.buffer1 = malloc(sizeof(unsigned char) * card_buffer.write_buffer_size);
+    card_buffer.buffer2 = malloc(sizeof(unsigned char) * card_buffer.write_buffer_size);
+    card_buffer.actual_read_buffer = 1;
+    card_buffer.reading_buffer = card_buffer.buffer1;
+    card_buffer.writing_buffer = card_buffer.buffer2;
+    
+    // Set up file descriptors for this card
+    char dvr_path[256];
+    snprintf(dvr_path, sizeof(dvr_path), "/dev/dvb/adapter%d/dvr0", card_id);
+    
+    // Open DVR device
+    int fd_dvr = open(dvr_path, O_RDONLY | O_NONBLOCK);
+    if (fd_dvr < 0) {
+        log_message(log_module, MSG_ERROR, "Cannot open DVR device %s for card %d (errno: %d)", 
+                    dvr_path, card_id, errno);
+        return -1;
+    }
+    
+    // Set up polling file descriptors for this card
+    struct pollfd pfds[1];
+    pfds[0].fd = fd_dvr;
+    pfds[0].events = POLLIN;
+    pfds[0].revents = 0;
+    
+    // Create a local fds structure for this card
+    fds_t card_fds;
+    card_fds.fd_source = 0; // DVB source
+    card_fds.fd_dvr = fd_dvr;
+    card_fds.pfds = pfds;
+    card_fds.pfdsnum = 1;
+    
+    // Set up card thread parameters
+    card_thread_parameters_t card_thread_params;
+    card_thread_params.thread_running = 1;
+    card_thread_params.fds = &card_fds;
+    card_thread_params.card_buffer = &card_buffer;
+    card_thread_params.threadshutdown = 0;
+    
+    // Initialize mutex and condition for this card
+    if (pthread_mutex_init(&card_thread_params.carddatamutex, NULL) != 0) {
+        log_message(log_module, MSG_ERROR, "Failed to initialize card data mutex for card %d", card_id);
+        close(fd_dvr);
+        return -1;
+    }
+    
+    if (pthread_cond_init(&card_thread_params.threadcond, NULL) != 0) {
+        log_message(log_module, MSG_ERROR, "Failed to initialize card thread condition for card %d", card_id);
+        pthread_mutex_destroy(&card_thread_params.carddatamutex);
+        close(fd_dvr);
+        return -1;
+    }
+    
+    // Create the card reading thread using existing infrastructure
+    pthread_t card_thread;
+    if (pthread_create(&card_thread, NULL, read_card_thread_func, &card_thread_params) != 0) {
+        log_message(log_module, MSG_ERROR, "Failed to create card reading thread for card %d", card_id);
+        pthread_mutex_destroy(&card_thread_params.carddatamutex);
+        pthread_cond_destroy(&card_thread_params.threadcond);
+        close(fd_dvr);
+        return -1;
+    }
+    
+    // Register the thread for proper cleanup
+    register_thread(card_thread, "Card-Reading", NULL, NULL);
+    
+    log_message(log_module, MSG_INFO, "Card reading thread started for card %d on frequency %.0f Hz using existing infrastructure", 
+                card_id, frequency);
+    
+    return 0;
+}
+
+/** @brief Stop data streaming for a card/frequency combination
+ * @param card_id The card ID to stop streaming for
+ * @param frequency The frequency being streamed
+ * @return 0 on success, -1 on error
+ */
+int stop_card_data_streaming(int card_id, double frequency)
+{
+    log_message(log_module, MSG_INFO, "Stopping data streaming for card %d on frequency %.0f Hz", 
+                card_id, frequency);
+    
+    // Update card utilization tracking to decrement client count
+    pthread_mutex_lock(&utilization_global_mutex);
+    
+    for (int i = 0; i < 16; i++) {
+        if (card_utilization[i].card_id == card_id) {
+            pthread_mutex_lock(&card_utilization[i].utilization_mutex);
+            
+            if (card_utilization[i].total_clients > 0) {
+                card_utilization[i].total_clients--;
+            }
+            
+            // If no more clients, mark as not streaming
+            if (card_utilization[i].total_clients <= 0) {
+                card_utilization[i].is_streaming = 0;
+                card_utilization[i].current_frequency = 0.0;
+                strcpy(card_utilization[i].usage_type, "idle");
+            }
+            
+            card_utilization[i].last_activity = time(NULL);
+            pthread_mutex_unlock(&card_utilization[i].utilization_mutex);
+            break;
+        }
+    }
+    
+    pthread_mutex_unlock(&utilization_global_mutex);
+    
+    // Update card availability tracking
+    for (int i = 0; i < card_availability_count; i++) {
+        if (card_availability[i].card_id == card_id) {
+            pthread_mutex_lock(&card_availability[i].card_mutex);
+            
+            if (card_availability[i].client_count > 0) {
+                card_availability[i].client_count--;
+            }
+            
+            // If no more clients, mark as available
+            if (card_availability[i].client_count <= 0) {
+                card_availability[i].is_streaming = 0;
+                card_availability[i].is_available = 1;
+                card_availability[i].current_frequency = 0.0;
+            }
+            
+            card_availability[i].last_activity = time(NULL);
+            pthread_mutex_unlock(&card_availability[i].card_mutex);
+            break;
+        }
+    }
+    
+    log_message(log_module, MSG_INFO, "Data streaming stopped for card %d on frequency %.0f Hz", 
+                card_id, frequency);
+    
+    return 0;
+}
+
 /** @brief Bootstrap a card for immediate use when a client requests data
  * @param card_id The card ID to bootstrap
  * @param frequency The frequency to tune to
@@ -2230,6 +2456,12 @@ int bootstrap_card_for_frequency(int card_id, double frequency)
     
     log_message(log_module, MSG_INFO, "Successfully bootstrapped card %d for frequency %.0f Hz", 
                 card_id, frequency);
+    
+    // Start data streaming using existing card reading infrastructure
+    if (start_card_data_streaming(card_id, frequency) != 0) {
+        log_message(log_module, MSG_ERROR, "Failed to start data streaming for card %d", card_id);
+        return -1;
+    }
     
     return 0;
 }
