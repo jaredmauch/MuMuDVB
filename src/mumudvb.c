@@ -840,14 +840,9 @@ int main (int argc, char **argv)
 		
 		// Set scan limit to leave one card available for client requests
 		// If we have only 1 card, use it for scanning (no choice)
-		// If we have 2+ cards, reserve 1 for clients
-		if (unified_system.num_cards == 1) {
-			unified_system.scan_limit = 1;
-			log_message(log_module, MSG_INFO, "Only 1 card available, using it for scanning (no card reserved for clients)");
-		} else {
-			unified_system.scan_limit = unified_system.num_cards - 1;
-			log_message(log_module, MSG_INFO, "Set scan_limit to %d (reserving 1 card for client requests)", unified_system.scan_limit);
-		}
+		// Use all cards for scanning with rotating idle card system
+		unified_system.scan_limit = unified_system.num_cards;
+		log_message(log_module, MSG_INFO, "Set scan_limit to %d (all cards will participate in scanning with rotating idle card)", unified_system.scan_limit);
 		
 		// Initialize parallel card manager for simultaneous testing
 		if (init_parallel_card_manager(&unified_system) != 0) {
