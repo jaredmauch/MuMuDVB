@@ -95,7 +95,7 @@ char *autoconf_log_module = autoconf_log_module_buffer;
 int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id);
 int autoconf_read_cat(auto_p_t *auto_p,mumu_chan_p_t *chan_p);
 int autoconf_read_sdt(auto_p_t *auto_p,mumu_chan_p_t *chan_p);
-int autoconf_read_psip(auto_p_t *auto_p,mumu_chan_p_t *chan_p);
+int autoconf_read_psip(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id);
 int autoconf_read_nit(auto_p_t *parameters,mumu_chan_p_t *chan_p);
 int autoconf_read_pmt(auto_p_t *auto_p, mumudvb_channel_t *channel, mumudvb_ts_packet_t *pmt);
 int autoconf_pat_need_update(auto_p_t *auto_p, unsigned char *buf);
@@ -636,7 +636,7 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 				while(auto_p->psip_need_update && get_ts_packet(ts_packet,auto_p->autoconf_temp_psip))
 				{
 					ts_packet=NULL; // next call we only POP packets from the stack
-					autoconf_read_psip(auto_p,chan_p);
+					autoconf_read_psip(auto_p,chan_p,card_id);
 				}
 			}
 		}

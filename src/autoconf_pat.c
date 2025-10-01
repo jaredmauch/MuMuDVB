@@ -222,7 +222,7 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 			else
 			{
 				//Channel still here, we force PMT update
-				log_message( log_module, MSG_WARN,"Card %d Channel %d SID %d Force PMT update",
+				log_message( log_module, MSG_WARN,"card-%d Channel %d SID %d Force PMT update",
 						card_id, i,
 						chan_p->channels[i].service_id);
 				chan_p->channels[i].pmt_version=-1;

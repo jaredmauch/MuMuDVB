@@ -90,7 +90,7 @@ void autoconf_psip_need_update(auto_p_t *auto_p, unsigned char *buf)
  * 
  * @param auto_p : the structure containing autoconfiguration parameters
  */
-int autoconf_read_psip(auto_p_t *auto_p, mumu_chan_p_t *chan_p)
+int autoconf_read_psip(auto_p_t *auto_p, mumu_chan_p_t *chan_p, int card_id)
 {
 	//DOC : www.atsc.org/cms/standards/a_65-2009.pdf‎
 
@@ -144,7 +144,7 @@ int autoconf_read_psip(auto_p_t *auto_p, mumu_chan_p_t *chan_p)
 		auto_p->psip_version=psip->version_number;
 		auto_p->psip_all_sections_seen=0;
 		if(auto_p->psip_version!=-1)
-			log_message( log_module, MSG_INFO,"The PSIP version changed, channels description have changed");
+			log_message( log_module, MSG_INFO,"card-%d The PSIP version changed, channels description have changed", card_id);
 
 	}
 	//we store the section
