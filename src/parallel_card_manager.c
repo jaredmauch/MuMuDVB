@@ -371,6 +371,9 @@ void cleanup_parallel_card_manager(void)
         
         // Wait for all card threads to complete with timeout
         if (global_parallel_manager->card_threads) {
+            // Use mutex to protect card_threads array during cleanup
+            pthread_mutex_lock(&global_parallel_manager->shutdown_mutex);
+            
             for (int i = 0; i < global_parallel_manager->unified_system->num_cards; i++) {
                 pthread_t thread_id = global_parallel_manager->card_threads[i];
                 
@@ -402,6 +405,9 @@ void cleanup_parallel_card_manager(void)
                     log_message(log_module, MSG_DEBUG, "Skipping card %d thread (invalid or current thread)", i);
                 }
             }
+            
+            // Unlock the mutex after all thread cleanup is complete
+            pthread_mutex_unlock(&global_parallel_manager->shutdown_mutex);
         }
         
         // Signal the client processor thread to wake up and check shutdown
@@ -1629,6 +1635,9 @@ int start_parallel_card_scanning(void)
     global_parallel_manager->current_result_count = 0;
     
     // Create threads (limited by scan_limit if set)
+    // Use mutex to protect card_threads array during creation
+    pthread_mutex_lock(&global_parallel_manager->shutdown_mutex);
+    
     for (int card_idx = 0; card_idx < threads_to_create; card_idx++) {
         int *card_id = malloc(sizeof(int));
         if (!card_id) {
@@ -1640,12 +1649,14 @@ int start_parallel_card_scanning(void)
         log_message(log_module, MSG_INFO, "Creating worker thread for card %d (adapter %d)", 
                     card_idx, *card_id);
         
+        // Initialize thread slot to 0 before creating thread
+        global_parallel_manager->card_threads[card_idx] = 0;
+        
         if (pthread_create(&global_parallel_manager->card_threads[card_idx], NULL, 
                           card_worker_thread, card_id) != 0) {
             log_message(log_module, MSG_ERROR, "Failed to create worker thread for card %d", *card_id);
             free(card_id);
-            // Mark this thread slot as invalid
-            global_parallel_manager->card_threads[card_idx] = 0;
+            // Keep thread slot as 0 (already set above)
             continue;
         }
         
@@ -1676,6 +1687,9 @@ int start_parallel_card_scanning(void)
             }
         }
     }
+    
+    // Unlock the mutex after all thread creation is complete
+    pthread_mutex_unlock(&global_parallel_manager->shutdown_mutex);
     
     log_message(log_module, MSG_INFO, "All card worker threads created - scanning in progress");
     
