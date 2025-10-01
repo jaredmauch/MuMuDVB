@@ -372,21 +372,31 @@ void cleanup_parallel_card_manager(void)
         // Wait for all card threads to complete with timeout
         if (global_parallel_manager->card_threads) {
             for (int i = 0; i < global_parallel_manager->unified_system->num_cards; i++) {
+                pthread_t thread_id = global_parallel_manager->card_threads[i];
+                
                 // Check if thread is valid (not zero) and not the current thread
-                if (global_parallel_manager->card_threads[i] != 0 && 
-                    !pthread_equal(global_parallel_manager->card_threads[i], pthread_self())) {
-                    log_message(log_module, MSG_DEBUG, "Waiting for card %d thread to complete...", i);
+                if (thread_id != 0 && !pthread_equal(thread_id, pthread_self())) {
+                    log_message(log_module, MSG_DEBUG, "Waiting for card %d thread to complete (thread_id=%lu)...", i, (unsigned long)thread_id);
+                    
+                    // Validate thread ID is reasonable (not obviously corrupted)
+                    if ((unsigned long)thread_id < 0x1000 || (unsigned long)thread_id > 0x7fffffffffff) {
+                        log_message(log_module, MSG_ERROR, "Card %d thread ID appears corrupted: %lu, skipping join", i, (unsigned long)thread_id);
+                        continue;
+                    }
                     
                     // Use timed join with 2 second timeout to avoid hanging
                     struct timespec timeout;
                     clock_gettime(CLOCK_REALTIME, &timeout);
                     timeout.tv_sec += 2; // 2 second timeout
                     
-                    int result = pthread_timedjoin_np(global_parallel_manager->card_threads[i], NULL, &timeout);
-                    if (result != 0) {
+                    int result = pthread_timedjoin_np(thread_id, NULL, &timeout);
+                    if (result == 0) {
+                        log_message(log_module, MSG_DEBUG, "Card %d thread completed successfully", i);
+                    } else if (result == ETIMEDOUT) {
                         log_message(log_module, MSG_WARN, "Card %d thread did not complete in time, continuing cleanup", i);
                     } else {
-                        log_message(log_module, MSG_DEBUG, "Card %d thread completed successfully", i);
+                        log_message(log_module, MSG_WARN, "Card %d thread join failed with error %d (%s), continuing cleanup", 
+                                   i, result, strerror(result));
                     }
                 } else {
                     log_message(log_module, MSG_DEBUG, "Skipping card %d thread (invalid or current thread)", i);
@@ -1634,10 +1644,23 @@ int start_parallel_card_scanning(void)
                           card_worker_thread, card_id) != 0) {
             log_message(log_module, MSG_ERROR, "Failed to create worker thread for card %d", *card_id);
             free(card_id);
+            // Mark this thread slot as invalid
+            global_parallel_manager->card_threads[card_idx] = 0;
             continue;
         }
         
-        log_message(log_module, MSG_INFO, "Created worker thread for card %d", *card_id);
+        // Validate the created thread ID
+        pthread_t thread_id = global_parallel_manager->card_threads[card_idx];
+        if (thread_id == 0 || (unsigned long)thread_id < 0x1000 || (unsigned long)thread_id > 0x7fffffffffff) {
+            log_message(log_module, MSG_ERROR, "Created thread for card %d has invalid thread ID: %lu", 
+                       *card_id, (unsigned long)thread_id);
+            global_parallel_manager->card_threads[card_idx] = 0;
+            free(card_id);
+            continue;
+        }
+        
+        log_message(log_module, MSG_INFO, "Created worker thread for card %d (thread_id=%lu)", 
+                   *card_id, (unsigned long)thread_id);
         
         // Small delay between thread creation using poll() instead of usleep()
         // Note: This is called from main thread context, so we can use poll()
