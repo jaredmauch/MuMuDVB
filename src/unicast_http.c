@@ -69,6 +69,7 @@
 #include "rewrite.h"
 #include "network.h"
 #include "unified_storage_adapter.h"
+#include "card_frequency_result.h"
 #ifdef ENABLE_CAM_SUPPORT
 #include "cam.h"
 #endif
@@ -125,7 +126,42 @@ int assign_channel_to_card_complete_flow(int requested_channel,
     int capable_cards[16] = {0};
     int num_capable_cards = 0;
     
+    // Check the parallel scan results to see which cards can handle this frequency
+    // Use the existing function to get scan results for each card
     if (global_unified_system) {
+        for (int i = 0; i < global_unified_system->num_cards; i++) {
+            int card_id = global_unified_system->cards[i].card_id;
+            
+            // Get scan results for this card
+            card_frequency_result_t results[16];
+            int num_results = get_card_scan_results(card_id, results, 16);
+            
+            // Check if any result shows this card can handle the target frequency
+            for (int j = 0; j < num_results; j++) {
+                if (results[j].frequency == frequency && results[j].status == 1) {
+                    // Check if we already added this card
+                    int already_added = 0;
+                    for (int k = 0; k < num_capable_cards; k++) {
+                        if (capable_cards[k] == card_id) {
+                            already_added = 1;
+                            break;
+                        }
+                    }
+                    
+                    if (!already_added) {
+                        capable_cards[num_capable_cards] = card_id;
+                        num_capable_cards++;
+                        log_message(log_module, MSG_DEBUG, "Step 2: Card %d can handle frequency %.0f Hz (from scan results)", 
+                                   card_id, frequency);
+                    }
+                    break; // Found a successful result for this card
+                }
+            }
+        }
+    }
+    
+    // Fallback: if no parallel manager results, check unified system
+    if (num_capable_cards == 0 && global_unified_system) {
         for (int i = 0; i < global_unified_system->num_cards; i++) {
             int card_id = global_unified_system->cards[i].card_id;
             
@@ -134,7 +170,7 @@ int assign_channel_to_card_complete_flow(int requested_channel,
                 if (global_unified_system->cards[i].available_frequencies[j] == frequency) {
                     capable_cards[num_capable_cards] = card_id;
                     num_capable_cards++;
-                    log_message(log_module, MSG_DEBUG, "Step 2: Card %d can handle frequency %.0f Hz", 
+                    log_message(log_module, MSG_DEBUG, "Step 2: Card %d can handle frequency %.0f Hz (from unified system)", 
                                card_id, frequency);
                     break;
                 }
