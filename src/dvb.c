@@ -231,7 +231,7 @@ void *show_power_func(void* arg)
 				if(meas_ber_ok)
 				{
 					meas_ber_ok=0;
-					log_message( log_module,  MSG_WARN, "An issue happened during the IOCTLS to take BER measurements error: %s",strerror(errno));
+					log_message( log_module,  MSG_DEBUG, "card-%d BER measurements not supported: %s", strengthparams->tune_p->card, strerror(errno));
 				}
 			}
 			else
@@ -242,7 +242,7 @@ void *show_power_func(void* arg)
 				if(meas_strength_ok)
 				{
 					meas_strength_ok=0;
-					log_message( log_module,  MSG_WARN, "An issue happened during the IOCTLS to take strength measurements error: %s",strerror(errno));
+					log_message( log_module,  MSG_DEBUG, "card-%d Signal strength measurements not supported: %s", strengthparams->tune_p->card, strerror(errno));
 				}
 			}
 			else
@@ -256,7 +256,7 @@ void *show_power_func(void* arg)
 				if(meas_snr_ok)
 				{
 					meas_snr_ok=0;
-					log_message( log_module,  MSG_WARN, "An issue happened during the IOCTLS to take SNR measurements error: %s",strerror(errno));
+					log_message( log_module,  MSG_DEBUG, "card-%d SNR measurements not supported: %s", strengthparams->tune_p->card, strerror(errno));
 				}
 			}
 			else
@@ -270,7 +270,7 @@ void *show_power_func(void* arg)
 				if(meas_ub_ok)
 				{
 					meas_ub_ok=0;
-					log_message( log_module,  MSG_WARN, "An issue happened during the IOCTLS to take uncorrected blocks measurements error: %s",strerror(errno));
+					log_message( log_module,  MSG_DEBUG, "card-%d Uncorrected blocks measurements not supported: %s", strengthparams->tune_p->card, strerror(errno));
 				}
 			}
 			else
@@ -690,7 +690,7 @@ void show_card_capabilities( int card, int tuner )
 	struct dvb_frontend_info fe_info;
 	i_ret = ioctl(frontend_fd,FE_GET_INFO, &fe_info);
 	if (i_ret < 0){
-		log_message( log_module,  MSG_ERROR, "FE_GET_INFO: %s \n", strerror(errno));
+		log_message( log_module,  MSG_ERROR, "card-%d FE_GET_INFO failed: %s (errno=%d)", card, strerror(errno), errno);
 		close (frontend_fd);
 		return;
 	}
@@ -804,7 +804,7 @@ int get_card_frontend_type(int card, int tuner)
 	close(frontend_fd);
 	
 	if (i_ret < 0) {
-		log_message(log_module, MSG_DEBUG, "FE_GET_INFO failed for card %d: %s", card, strerror(errno));
+		log_message(log_module, MSG_DEBUG, "card-%d FE_GET_INFO failed: %s (errno=%d)", card, strerror(errno), errno);
 		return -1;
 	}
 	

@@ -1627,7 +1627,7 @@ int tune_it(int fd_frontend, tune_p_t *tuneparams)
 
 	res = ioctl(fd_frontend,FE_GET_INFO, &fe_info);
 	if (res < 0){
-		log_message( log_module,  MSG_ERROR, "FE_GET_INFO: %s \n", strerror(errno));
+		log_message( log_module,  MSG_ERROR, "card-%d FE_GET_INFO failed: %s (errno=%d)", tuneparams->card, strerror(errno), errno);
 		return -1;
 	}
 
@@ -1693,7 +1693,7 @@ default:
 			return -1;
 		//get new info
 		if ( (res = ioctl(fd_frontend,FE_GET_INFO, &fe_info) < 0)){
-			log_message( log_module,  MSG_ERROR, "FE_GET_INFO: %s \n", strerror(errno));
+			log_message( log_module,  MSG_ERROR, "card-%d FE_GET_INFO failed after delivery system change: %s (errno=%d)", tuneparams->card, strerror(errno), errno);
 			return -1;
 		}
 		// Save the frontend name for easy identification
