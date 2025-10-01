@@ -592,9 +592,21 @@ void cleanup_unified_channel_system(unified_channel_system_t *unified_system)
     
     // Cancel and join all card threads
     for (int i = 0; i < unified_system->num_cards; i++) {
-        if (unified_system->cards[i].card_thread) {
-            pthread_cancel(unified_system->cards[i].card_thread);
-            pthread_join(unified_system->cards[i].card_thread, NULL);
+        if (unified_system->cards[i].card_thread != 0) {
+            // Validate thread ID before attempting to cancel/join
+            pthread_t thread_id = unified_system->cards[i].card_thread;
+            if ((unsigned long)thread_id >= 0x1000 && (unsigned long)thread_id <= 0x7fffffffffff) {
+                pthread_cancel(thread_id);
+                int join_result = pthread_join(thread_id, NULL);
+                if (join_result != 0) {
+                    log_message(log_module, MSG_WARN, "Card %d thread join failed: %s", 
+                               unified_system->cards[i].card_id, strerror(join_result));
+                }
+            } else {
+                log_message(log_module, MSG_WARN, "Card %d has invalid thread ID: %lu, skipping join", 
+                           unified_system->cards[i].card_id, (unsigned long)thread_id);
+            }
+            unified_system->cards[i].card_thread = 0;
         }
         
         // Free allocated memory - close file descriptors first!
@@ -1205,6 +1217,9 @@ static int channel_client_count = 0;
 static frequency_scan_status_t frequency_scan_status[256]; // Max 16 cards * 16 frequencies
 static int frequency_scan_count = 0;
 static pthread_mutex_t utilization_global_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Additional mutex for global static variables
+static pthread_mutex_t global_static_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Helper function to check if a card/frequency combination is known to be unusable
 static int is_card_frequency_unusable(int card_id, double frequency)

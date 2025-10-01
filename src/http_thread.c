@@ -148,8 +148,19 @@ void cleanup_http_thread(void)
     stop_http_thread();
     
     // Wait for thread to finish
-    if (global_http_thread->thread) {
-        pthread_join(global_http_thread->thread, NULL);
+    if (global_http_thread->thread != 0) {
+        pthread_t thread_id = global_http_thread->thread;
+        // Validate thread ID before attempting to join
+        if ((unsigned long)thread_id >= 0x1000 && (unsigned long)thread_id <= 0x7fffffffffff) {
+            int join_result = pthread_join(thread_id, NULL);
+            if (join_result != 0) {
+                log_message(log_module, MSG_WARN, "HTTP thread join failed: %s", strerror(join_result));
+            }
+        } else {
+            log_message(log_module, MSG_WARN, "HTTP thread has invalid thread ID: %lu, skipping join", 
+                       (unsigned long)thread_id);
+        }
+        global_http_thread->thread = 0;
     }
     
     // Destroy mutexes
