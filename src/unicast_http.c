@@ -1960,10 +1960,17 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 				else
 				{
 					// For GET requests, add the client to the channel for streaming
-					if(!channel_add_unicast_client(client,&channels[requested_channel-1]))
-						client->chan_ptr=&channels[requested_channel-1];
-					else
+					// Check if requested_channel is valid before accessing channels array
+					if (requested_channel > 0 && requested_channel <= number_of_channels) {
+						if(!channel_add_unicast_client(client,&channels[requested_channel-1]))
+							client->chan_ptr=&channels[requested_channel-1];
+						else
+							return -2;
+					} else {
+						log_message(log_module, MSG_ERROR, "Invalid channel number %d (valid range: 1-%d), cannot add client", 
+								   requested_channel, number_of_channels);
 						return -2;
+					}
 				}
 			}
 
