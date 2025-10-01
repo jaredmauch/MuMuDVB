@@ -124,7 +124,11 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 		if (chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
 			log_message( log_module, MSG_ERROR,"Card %d Invalid number_of_channels: %d (max: %d), skipping channel cleanup\n", 
 						card_id, chan_p->number_of_channels, MAX_CHANNELS);
+			// Use mutex to safely reset the value
+			pthread_mutex_lock(&chan_p->lock);
 			chan_p->number_of_channels = 0; // Reset to safe value
+			pthread_mutex_unlock(&chan_p->lock);
+			return 0; // Exit early to prevent further corruption
 		}
 		
 		for(i=0;i<chan_p->number_of_channels && i< MAX_CHANNELS;i++)
@@ -199,7 +203,11 @@ int autoconf_read_pat(auto_p_t *auto_p,mumu_chan_p_t *chan_p,int card_id)
 		if (chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
 			log_message( log_module, MSG_ERROR,"Card %d Invalid number_of_channels in cleanup: %d (max: %d), skipping\n", 
 						card_id, chan_p->number_of_channels, MAX_CHANNELS);
+			// Use mutex to safely reset the value
+			pthread_mutex_lock(&chan_p->lock);
 			chan_p->number_of_channels = 0; // Reset to safe value
+			pthread_mutex_unlock(&chan_p->lock);
+			return 0; // Exit early to prevent further corruption
 		}
 		
 		for(i=0;i<chan_p->number_of_channels && i< MAX_CHANNELS;i++)
@@ -245,7 +253,10 @@ int autoconf_pat_update_chan(pat_prog_t  *prog,int pat_version,mumu_chan_p_t *ch
 	if (chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
 		log_message( log_module, MSG_ERROR,"Invalid number_of_channels in update_chan: %d (max: %d), skipping\n", 
 					chan_p->number_of_channels, MAX_CHANNELS);
+		// Use mutex to safely reset the value
+		pthread_mutex_lock(&chan_p->lock);
 		chan_p->number_of_channels = 0; // Reset to safe value
+		pthread_mutex_unlock(&chan_p->lock);
 		return -1;
 	}
 
@@ -263,6 +274,15 @@ int autoconf_pat_update_chan(pat_prog_t  *prog,int pat_version,mumu_chan_p_t *ch
 	//if chan num == -1 we create a new channel and update channel number
 	if(chan_num==-1)
 	{
+		// Additional safety check before creating new channel
+		if(chan_p->number_of_channels < 0 || chan_p->number_of_channels > MAX_CHANNELS) {
+			log_message( log_module, MSG_ERROR,"Invalid number_of_channels before channel creation: %d (max: %d), resetting\n", 
+						chan_p->number_of_channels, MAX_CHANNELS);
+			pthread_mutex_lock(&chan_p->lock);
+			chan_p->number_of_channels = 0;
+			pthread_mutex_unlock(&chan_p->lock);
+		}
+		
 		if(chan_p->number_of_channels>=(MAX_CHANNELS-1))
 		{
 			//too many channels
