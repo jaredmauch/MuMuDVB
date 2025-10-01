@@ -1187,37 +1187,43 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 							int card_id = target_enhanced_channel->card_id;
 							
 							if (frequency > 0) {
-								// Find available card for this frequency
-								int available_card_id = find_available_card_for_frequency(frequency, -1);
-								if (available_card_id >= 0) {
-									// Check if card is already tuned to this frequency (pre-staged)
-									int card_already_tuned = 0;
-									if (global_unified_system) {
-										for (int i = 0; i < global_unified_system->num_cards; i++) {
-											if (global_unified_system->cards[i].card_id == available_card_id &&
-												global_unified_system->cards[i].current_freq == frequency &&
-												global_unified_system->cards[i].in_use) {
-												card_already_tuned = 1;
-												break;
-											}
+								// First, check if any card is already tuned to this frequency and serving clients
+								int existing_card_id = -1;
+								if (global_unified_system) {
+									for (int i = 0; i < global_unified_system->num_cards; i++) {
+										if (global_unified_system->cards[i].current_freq == frequency &&
+											global_unified_system->cards[i].in_use) {
+											existing_card_id = global_unified_system->cards[i].card_id;
+											log_message( log_module, MSG_INFO,"Channel %d (%s) routing to existing card %d on frequency %.0f Hz (original card: %d)\n", 
+													   requested_channel, target_enhanced_channel->base_channel.name, existing_card_id, frequency, card_id);
+											break;
 										}
 									}
-									
-									if (card_already_tuned) {
-										log_message( log_module, MSG_INFO,"Channel %d (%s) using pre-staged card %d on frequency %.0f Hz (original card: %d)\n", 
-												   requested_channel, target_enhanced_channel->base_channel.name, available_card_id, frequency, card_id);
-									} else {
-										// Card not pre-staged, bootstrap it now
+								}
+								
+								// If no card is serving this frequency, find an available card and tune it
+								if (existing_card_id == -1) {
+									int available_card_id = find_available_card_for_frequency(frequency, -1);
+									if (available_card_id >= 0) {
+										// Bootstrap the card (tune it and load TS data) for this frequency
 										if (bootstrap_card_for_frequency(available_card_id, frequency) == 0) {
 											log_message( log_module, MSG_INFO,"Channel %d (%s) bootstrapped on card %d for frequency %.0f Hz (original card: %d)\n", 
 													   requested_channel, target_enhanced_channel->base_channel.name, available_card_id, frequency, card_id);
+											existing_card_id = available_card_id;
 										} else {
 											log_message( log_module, MSG_ERROR,"Failed to bootstrap card %d for channel %d frequency %.0f Hz\n", available_card_id, requested_channel, frequency);
 											err404=1;
 											requested_channel=0;
 										}
+									} else {
+										log_message( log_module, MSG_ERROR,"No available card for channel %d frequency %.0f Hz\n", requested_channel, frequency);
+										err404=1;
+										requested_channel=0;
 									}
-									
+								}
+								
+								// If we have a card (either existing or newly tuned), proceed with client addition
+								if (existing_card_id >= 0) {
 									// Convert enhanced channel to regular channel for client addition
 									// We need to ensure the regular channels array has this channel
 									if (requested_channel <= number_of_channels) {
@@ -1229,10 +1235,6 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 										err404=1;
 										requested_channel=0;
 									}
-								} else {
-									log_message( log_module, MSG_ERROR,"No available card for channel %d frequency %.0f Hz\n", requested_channel, frequency);
-									err404=1;
-									requested_channel=0;
 								}
 							} else {
 								log_message( log_module, MSG_ERROR,"Channel %d has invalid frequency %.0f Hz\n", requested_channel, frequency);
