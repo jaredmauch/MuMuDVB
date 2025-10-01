@@ -867,13 +867,14 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 
 		log_message( log_module, MSG_FLOOD,"End of HTTP request, we parse it\n");
 
-		if(strstr(client->buffer,"GET ")==client->buffer)
+		if(strstr(client->buffer,"GET ")==client->buffer || strstr(client->buffer,"HEAD ")==client->buffer)
 		{
 			//to implement :
 			//Information ???
 			//GET /monitor/???
 
 			pos=4;
+			int is_head_request = (strstr(client->buffer,"HEAD ")==client->buffer);
 
 			/* preselected channels via the port of the connection */
 			//if the client have already an asked channel we don't parse the GET
@@ -1619,10 +1620,26 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 			//We have found a channel, we add the client
 			if(requested_channel)
 			{
-				if(!channel_add_unicast_client(client,&channels[requested_channel-1]))
-					client->chan_ptr=&channels[requested_channel-1];
+				if(is_head_request)
+				{
+					// For HEAD requests, just send the headers without adding to the channel
+					log_message( log_module, MSG_DEBUG,"HEAD request for channel %d, sending headers only\n", requested_channel);
+					iRet = write(client->Socket, HTTP_OK_REPLY, strlen(HTTP_OK_REPLY));
+					if(iRet!=strlen(HTTP_OK_REPLY))
+					{
+						log_message( log_module, MSG_INFO,"Error when sending the HTTP reply for HEAD request\n");
+						return -2;
+					}
+					return -2; // Close connection after sending headers
+				}
 				else
-					return -2;
+				{
+					// For GET requests, add the client to the channel for streaming
+					if(!channel_add_unicast_client(client,&channels[requested_channel-1]))
+						client->chan_ptr=&channels[requested_channel-1];
+					else
+						return -2;
+				}
 			}
 
 		}
