@@ -173,25 +173,48 @@ static int atsc_psip_peek_section_source_id(const unsigned char *ts)
 	return -1;
 }
 
-int atsc_psip_should_forward_guide_packet(atsc_psip_t *psip, mumudvb_channel_t *channel,
-		int pid, unsigned char *ts_packet)
+static int atsc_psip_next_guide_cc(mumudvb_channel_t *channel, int pid)
+{
+	int i;
+	int free_slot = -1;
+	int cc;
+
+	for (i = 0; i < 8; i++)
+	{
+		if (channel->atsc_guide_cc_pids[i] == pid)
+		{
+			cc = channel->atsc_guide_cc_vals[i] & 0x0f;
+			channel->atsc_guide_cc_vals[i] = (cc + 1) & 0x0f;
+			return cc;
+		}
+		if (free_slot < 0 && channel->atsc_guide_cc_pids[i] < 0)
+			free_slot = i;
+	}
+	if (free_slot < 0)
+		free_slot = 0; /* overwrite oldest slot if full */
+	channel->atsc_guide_cc_pids[free_slot] = pid;
+	channel->atsc_guide_cc_vals[free_slot] = 1;
+	return 0;
+}
+
+int atsc_psip_filter_guide_packet(atsc_psip_t *psip, mumudvb_channel_t *channel,
+		int pid, unsigned char *ts_packet, unsigned char *out188)
 {
 	int source_id;
 	int match;
+	int forward = 0;
 
-	if (!psip || !psip->sort_guide || !channel || !ts_packet)
+	if (!psip || !psip->sort_guide || !channel || !ts_packet || !out188)
 		return 0;
 
 	/* Until VCT maps source_id, keep full guide so clients are not left empty */
 	if (channel->atsc_source_id <= 0)
-		return 1;
-
-	if (ts_packet[1] & 0x40) /* PUSI: new section decision */
+		forward = 1;
+	else if (ts_packet[1] & 0x40) /* PUSI: new section decision */
 	{
 		source_id = atsc_psip_peek_section_source_id(ts_packet);
 		if (source_id <= 0)
 		{
-			/* Cannot classify — do not forward (avoid leaking other SIDs) */
 			channel->atsc_guide_filter_pid = pid;
 			channel->atsc_guide_filter_match = 0;
 			return 0;
@@ -199,13 +222,18 @@ int atsc_psip_should_forward_guide_packet(atsc_psip_t *psip, mumudvb_channel_t *
 		match = (source_id == channel->atsc_source_id) ? 1 : 0;
 		channel->atsc_guide_filter_pid = pid;
 		channel->atsc_guide_filter_match = match;
-		return match;
+		forward = match;
 	}
+	else if (channel->atsc_guide_filter_pid == pid && channel->atsc_guide_filter_match)
+		forward = 1;
 
-	/* Continuation of the section decided on the last PUSI for this PID */
-	if (channel->atsc_guide_filter_pid == pid && channel->atsc_guide_filter_match)
-		return 1;
-	return 0;
+	if (!forward)
+		return 0;
+
+	memcpy(out188, ts_packet, TS_PACKET_SIZE);
+	/* Keep payload intact; only renumber CC so dropped other-SID packets don't gap */
+	out188[3] = (unsigned char)((out188[3] & 0xf0) | atsc_psip_next_guide_cc(channel, pid));
+	return 1;
 }
 
 int atsc_psip_read_configuration(atsc_psip_t *psip, char *substring)

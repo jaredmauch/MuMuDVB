@@ -1802,14 +1802,17 @@ int main (int argc, char **argv)
 
 				/******************************************************/
 				//ATSC EIT/ETT guide filter (per channel source_id)
-				// Forward original TS packets only for matching sections.
+				// Forward original section payloads; rewrite CC only.
 				/******************************************************/
 				if (atsc_psip.sort_guide &&
 						(tune_p.fe_type == FE_ATSC) &&
 						atsc_psip_is_extra_pid(&atsc_psip, pid))
 				{
-					send_packet = atsc_psip_should_forward_guide_packet(&atsc_psip,
-							&chan_p.channels[ichan], pid, actual_ts_packet);
+					unsigned char guide_ts[TS_PACKET_SIZE];
+					if (atsc_psip_filter_guide_packet(&atsc_psip, &chan_p.channels[ichan],
+							pid, actual_ts_packet, guide_ts))
+						buffer_func(&chan_p.channels[ichan], guide_ts, &unic_p, scam_vars_ptr);
+					send_packet = 0;
 				}
 
 				/******************************************************/

@@ -70,8 +70,11 @@ void atsc_psip_mark_asked(atsc_psip_t *psip, mumu_chan_p_t *chan_p);
 /** Feed a TS packet; pid must be the packet's PID. */
 int atsc_psip_new_packet(atsc_psip_t *psip, int pid, unsigned char *ts_packet,
 		mumu_chan_p_t *chan_p, fds_t *fds, char *card_base_path, int tuner);
-/** Decide if this raw EIT/ETT TS packet should be forwarded for the channel. */
-int atsc_psip_should_forward_guide_packet(atsc_psip_t *psip, mumudvb_channel_t *channel,
-		int pid, unsigned char *ts_packet);
+/**
+ * If this EIT/ETT TS packet belongs to the channel's source_id, copy it with a
+ * rewritten continuity counter into out188 and return 1. Otherwise return 0.
+ */
+int atsc_psip_filter_guide_packet(atsc_psip_t *psip, mumudvb_channel_t *channel,
+		int pid, unsigned char *ts_packet, unsigned char *out188);
 
 #endif
