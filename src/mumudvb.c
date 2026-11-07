@@ -201,8 +201,13 @@ char *cmdline_get_override(int *idx, char *current_line, int argc, char **argv) 
     while (idx && *idx < argc - 1) {
 	(*idx)++;
 	if (strlen(argv[*idx - 1]) == 2 && !memcmp(argv[*idx - 1], "-o", 2)) {
+	    if (strlen(argv[*idx]) >= CONF_LINELEN) {
+		log_message(log_module, MSG_ERROR, "Override from command line too long (max %d), ignored\n", CONF_LINELEN - 1);
+		return NULL;
+	    }
 	    log_message(log_module, MSG_DEBUG, "Override from command line: %s\n", argv[*idx]);
-	    return strcpy(current_line, argv[*idx]);
+	    snprintf(current_line, CONF_LINELEN, "%s", argv[*idx]);
+	    return current_line;
 	}
     }
     return NULL;

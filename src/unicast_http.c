@@ -536,8 +536,8 @@ unicast_client_t *unicast_accept_connection(unicast_parameters_t *unicast_vars, 
 	struct sockaddr_storage fromAddrIn = { 0, };
 	struct sockaddr_storage toAddrIn = { 0, };
 
-	char fromBuf[INET6_ADDRSTRLEN];
-	char toBuf[INET6_ADDRSTRLEN];
+	char fromBuf[IPV6_CHAR_LEN];
+	char toBuf[IPV6_CHAR_LEN];
 
 	l = sizeof(struct sockaddr_storage);
 	fromSocket = accept(socketIn, (struct sockaddr *)&fromAddrIn, &l);
@@ -690,6 +690,11 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 	/************ auto increasing buffer to receive the message **************/
 	if((client->buffersize-client->bufferpos)<RECV_BUFFER_MULTIPLE)
 	{
+		if (client->buffersize + RECV_BUFFER_MULTIPLE + 1 > RECV_BUFFER_MAX)
+		{
+			log_message( log_module, MSG_WARN,"HTTP request from client exceeds %d bytes, closing\n", RECV_BUFFER_MAX);
+			return -1;
+		}
 		client->buffer=realloc(client->buffer,(client->buffersize + RECV_BUFFER_MULTIPLE+1)*sizeof(char)); //the +1 if for the \0 at the end
 		if(client->buffer==NULL)
 		{
@@ -1224,17 +1229,24 @@ unicast_send_streamed_channels_list (int number_of_channels, mumudvb_channel_t *
 		if (channels[curr_channel].channel_ready>=READY)
 		{
 			if(host)
-				unicast_reply_write(reply, "Channel number %d : %s<br>Unicast link : <a href=\"http://%s/bysid/%d\">http://%s/bysid/%d</a><br>Multicast ip : %s:%d<br><br>\r\n",
+				unicast_reply_write(reply, "Channel number %d : %s<br>Unicast link : <a href=\"http://%s/bysid/%d\">http://%s/bysid/%d</a><br>Multicast ip : %s:%d<br>\r\n",
 						curr_channel+1,
 						channels[curr_channel].name,
 						host,channels[curr_channel].service_id,
 						host,channels[curr_channel].service_id,
 						channels[curr_channel].ip4Out,channels[curr_channel].portOut);
 			else
-				unicast_reply_write(reply, "Channel number %d : \"%s\"<br>Multicast ip : %s:%d<br><br>\r\n",
+				unicast_reply_write(reply, "Channel number %d : \"%s\"<br>Multicast ip : %s:%d<br>\r\n",
 						curr_channel+1,
 						channels[curr_channel].name,
 						channels[curr_channel].ip4Out,channels[curr_channel].portOut);
+			if (channels[curr_channel].atsc_program_title[0])
+				unicast_reply_write(reply, "Now playing : %s<br>\r\n",
+						channels[curr_channel].atsc_program_title);
+			if (channels[curr_channel].atsc_program_description[0])
+				unicast_reply_write(reply, "Description : %s<br>\r\n",
+						channels[curr_channel].atsc_program_description);
+			unicast_reply_write(reply, "<br>\r\n");
 		}
 	unicast_reply_write(reply, HTTP_CHANNELS_REPLY_END);
 

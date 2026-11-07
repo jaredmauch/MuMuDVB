@@ -86,7 +86,7 @@ void autoconf_get_pmt_pids(auto_p_t *auto_p, mumudvb_ts_packet_t *pmt, int *pids
 	//search in the main loop
 	if(program_info_length > 0)
 	{
-		while(len = pmt_find_descriptor(0x09,pmt->data_full+PMT_LEN,program_info_length,&pos),len)
+		while(n_ca_descr < 255 && (len = pmt_find_descriptor(0x09,pmt->data_full+PMT_LEN,program_info_length,&pos),len))
 		{
 			log_message( log_module,  MSG_FLOOD,"  Found a CA descr in main loop at pos %d", pos);
 
@@ -103,7 +103,7 @@ void autoconf_get_pmt_pids(auto_p_t *auto_p, mumudvb_ts_packet_t *pmt, int *pids
 		descr_header=(pmt_info_t *)(pmt->data_full+i);
 		//We get the length of the descriptor
 		descr_section_len=HILO(descr_header->ES_info_length);        //ES_info_length
-		while(len = pmt_find_descriptor(0x09,pmt->data_full+i+PMT_INFO_LEN,descr_section_len, &pos),len)
+		while(n_ca_descr < 255 && (len = pmt_find_descriptor(0x09,pmt->data_full+i+PMT_INFO_LEN,descr_section_len, &pos),len))
 		{
 			log_message( log_module,  MSG_FLOOD,"  Found a CA descr in program loop (%d) at relative pos %d", i, pos);
 			pos_ca_descr[n_ca_descr] = pos+i+PMT_INFO_LEN;
@@ -121,6 +121,11 @@ void autoconf_get_pmt_pids(auto_p_t *auto_p, mumudvb_ts_packet_t *pmt, int *pids
 		pid=HILO(ca_descriptor->CA_PID);
 		pid_type=PID_ECM;
 		log_message( log_module,  MSG_DEBUG,"  ECM \tPID %d\n",pid);
+		if (*num_pids >= MAX_PIDS)
+		{
+			log_message( log_module,  MSG_ERROR, "Too many PIDs while parsing CA descriptors : %d\n", *num_pids);
+			break;
+		}
 		pids[*num_pids]=pid;
 		pids_type[*num_pids]=pid_type;
 		memcpy(temp_pids_language[*num_pids], language, 4);
@@ -145,6 +150,11 @@ void autoconf_get_pmt_pids(auto_p_t *auto_p, mumudvb_ts_packet_t *pmt, int *pids
 			}
 			if (pid_already_added == 0)
 			{
+				if (*num_pids >= MAX_PIDS)
+				{
+					log_message( log_module,  MSG_ERROR, "Too many PIDs while adding EMM PID : %d\n", *num_pids);
+					break;
+				}
 				pids[*num_pids]=ca_system->emm_pid;
 				pids_type[*num_pids]=PID_EMM;
 				(*num_pids)++;

@@ -62,6 +62,22 @@ void eit_show_CA_identifier_descriptor(unsigned char *buf, struct unicast_reply*
 
 #define MAX_DESCR_LEN 4096
 
+/** Copy a length-prefixed text field if it fits in the descriptor and destination. */
+static int eit_safe_copy_text(char *dst, size_t dst_size,
+		const unsigned char *src, int text_len, int remaining)
+{
+	if (!dst || dst_size == 0)
+		return -1;
+	dst[0] = '\0';
+	if (text_len < 0 || remaining < 0 || text_len > remaining)
+		return -1;
+	if ((size_t)text_len >= dst_size)
+		text_len = (int)dst_size - 1;
+	memcpy(dst, src, (size_t)text_len);
+	dst[text_len] = '\0';
+	return text_len;
+}
+
 // This function convert an UTF8 string into a JSON valid string, escaping the control characters.
 // For the moment it works only with static memory allocation
 //todo can realloc
@@ -426,16 +442,18 @@ void eit_show_multiling_comp_descr(unsigned char *buf, struct unicast_reply* rep
 
 	char text[MAX_DESCR_LEN];
 	char text2[MAX_DESCR_LEN];
+	int descr_end = 2 + (buf[1] & 0xff);
 
 	int delta=2;
 	int length;
 	int text_length;
+	int copied;
 	length=(buf[1])-1;
 	unicast_reply_write(reply, "\t\t\"component_tag\" :%d,\n",buf[delta]);
 	delta++;
 	unicast_reply_write(reply, "\t\t\"components\":[\n");
 	int first = 1;
-	while(length>0)
+	while(length>0 && delta + 4 <= descr_end)
 	{
 		if(first)
 		{
@@ -449,10 +467,11 @@ void eit_show_multiling_comp_descr(unsigned char *buf, struct unicast_reply* rep
 		length-=4;
 		text_length=buf[delta];
 		delta++;
-		memcpy(text,buf+delta,text_length*sizeof(char));
-		text[text_length]='\0';
+		copied = eit_safe_copy_text(text, sizeof(text), buf+delta, text_length, descr_end - delta);
+		if (copied < 0)
+			break;
 		convert_en300468_string(text, MAX_DESCR_LEN,1);mumu_string_to_json(text,MAX_DESCR_LEN,text2,MAX_DESCR_LEN);
-		unicast_reply_write(reply, "\t\t\"text\" : \"%s\"}", text);
+		unicast_reply_write(reply, "\t\t\"text\" : \"%s\"}", text2);
 		delta+=text_length;
 		length-=text_length;
 	}
@@ -461,24 +480,33 @@ void eit_show_multiling_comp_descr(unsigned char *buf, struct unicast_reply* rep
 
 void eit_show_short_evt_descr(unsigned char *buf, struct unicast_reply* reply)
 {
-
+	int descr_end = 2 + (buf[1] & 0xff);
 	int delta=2;
+	int copied;
+	if (delta + 3 > descr_end)
+		return;
 	unicast_reply_write(reply, "\t\t\"language\" : \"%c%c%c\",\n",buf[0+delta],buf[1+delta],buf[2+delta]);
 	delta+=3;
 	char text[MAX_DESCR_LEN];
 	char text2[MAX_DESCR_LEN];
 	int text_length;
+	if (delta >= descr_end)
+		return;
 	text_length=buf[delta]&0xff;
 	delta++;
-	memcpy(text,buf+delta,text_length*sizeof(char));
-	text[text_length]='\0';
+	copied = eit_safe_copy_text(text, sizeof(text), buf+delta, text_length, descr_end - delta);
+	if (copied < 0)
+		return;
 	convert_en300468_string(text, MAX_DESCR_LEN,1);mumu_string_to_json(text,MAX_DESCR_LEN,text2,MAX_DESCR_LEN);
 	unicast_reply_write(reply, "\t\t\"name\" : \"%s\",\n", text2);
 	delta+=text_length;
+	if (delta >= descr_end)
+		return;
 	text_length=buf[delta]&0xff;
 	delta++;
-	memcpy(text,buf+delta,text_length*sizeof(char));
-	text[text_length]='\0';
+	copied = eit_safe_copy_text(text, sizeof(text), buf+delta, text_length, descr_end - delta);
+	if (copied < 0)
+		return;
 	convert_en300468_string(text, MAX_DESCR_LEN,1);mumu_string_to_json(text,MAX_DESCR_LEN,text2,MAX_DESCR_LEN);
 	unicast_reply_write(reply, "\t\t\"text\" : \"%s\"\n", text2);
 }
@@ -486,7 +514,11 @@ void eit_show_short_evt_descr(unsigned char *buf, struct unicast_reply* reply)
 void eit_show_ext_evt_descr(unsigned char *buf, struct unicast_reply* reply)
 {
 	int delta;
+	int descr_end = 2 + (buf[1] & 0xff);
+	int copied;
 	delta=2;
+	if (delta + 5 > descr_end)
+		return;
 	unicast_reply_write(reply, "\t\t\"descr_number\" : %d ,\n",(buf[delta]>>4)+1);
 	unicast_reply_write(reply, "\t\t\"descr_total_number\" : %d,\n",(buf[delta]&0xF)+1);
 	delta++;
@@ -500,7 +532,7 @@ void eit_show_ext_evt_descr(unsigned char *buf, struct unicast_reply* reply)
 
 	unicast_reply_write(reply, "\t\t\"items\":[");
 	int first = 1;
-	while(length_of_items>0)
+	while(length_of_items>0 && delta + 1 <= descr_end)
 	{
 		if(first)
 		{
@@ -511,25 +543,32 @@ void eit_show_ext_evt_descr(unsigned char *buf, struct unicast_reply* reply)
 			unicast_reply_write(reply, ",\n{\n");
 		item_description_length=buf[delta]&0xff;
 		delta++;
-		memcpy(text,buf+delta,item_description_length*sizeof(char));
-		text[item_description_length]='\0';
+		copied = eit_safe_copy_text(text, sizeof(text), buf+delta, item_description_length, descr_end - delta);
+		if (copied < 0)
+			break;
 		convert_en300468_string(text, MAX_DESCR_LEN,1);mumu_string_to_json(text,MAX_DESCR_LEN,text2,MAX_DESCR_LEN);
 		unicast_reply_write(reply, "\t\t\"item_descr\" : \"%s\",\n", text2);
 		delta+=item_description_length;
+		if (delta >= descr_end)
+			break;
 		item_length=buf[delta]&0xff;
 		delta++;
-		memcpy(text,buf+delta,item_length*sizeof(char));
-		text[item_length]='\0';
+		copied = eit_safe_copy_text(text, sizeof(text), buf+delta, item_length, descr_end - delta);
+		if (copied < 0)
+			break;
 		convert_en300468_string(text, MAX_DESCR_LEN,1);mumu_string_to_json(text,MAX_DESCR_LEN,text2,MAX_DESCR_LEN);
 		unicast_reply_write(reply, "\t\t\"item\" : \"%s\"}\n", text2);
 		delta+=item_length;
 		length_of_items-=(2+item_description_length+item_length);
 	}
 	unicast_reply_write(reply, "],\n");
+	if (delta >= descr_end)
+		return;
 	text_length=buf[delta]&0xff;
 	delta++;
-	memcpy(text,buf+delta,text_length*sizeof(char));
-	text[text_length]='\0';
+	copied = eit_safe_copy_text(text, sizeof(text), buf+delta, text_length, descr_end - delta);
+	if (copied < 0)
+		return;
 	convert_en300468_string(text, MAX_DESCR_LEN,1);mumu_string_to_json(text,MAX_DESCR_LEN,text2,MAX_DESCR_LEN);
 	unicast_reply_write(reply, "\t\t\"text\": \"%s\"\n", text2);
 }
@@ -537,6 +576,7 @@ void eit_show_ext_evt_descr(unsigned char *buf, struct unicast_reply* reply)
 void eit_show_component_descr(unsigned char *buf, struct unicast_reply* reply)
 {
 	int delta;
+	int descr_end = 2 + (buf[1] & 0xff);
 	delta=2;
 
 	unicast_reply_write(reply, "\t\t\"len\" : %d",buf[1]&0xff);
@@ -558,8 +598,8 @@ void eit_show_component_descr(unsigned char *buf, struct unicast_reply* reply)
 		char text[MAX_DESCR_LEN];
 		char text2[MAX_DESCR_LEN];
 		text_length=(buf[1])-5;
-		memcpy(text,buf+delta,text_length*sizeof(char));
-		text[text_length]='\0';
+		if (eit_safe_copy_text(text, sizeof(text), buf+delta, text_length, descr_end - delta) < 0)
+			return;
 		convert_en300468_string(text, MAX_DESCR_LEN,1);mumu_string_to_json(text,MAX_DESCR_LEN,text2,MAX_DESCR_LEN);
 		unicast_reply_write(reply, "\t\t\"text\" : \"%s\"\n", text2);
 	}

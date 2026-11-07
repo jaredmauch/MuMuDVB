@@ -94,6 +94,8 @@ int atsc_psip_read_configuration(atsc_psip_t *psip, char *substring)
 	if (!strcmp(substring, "atsc_psip_eit"))
 	{
 		substring = strtok(NULL, delimiteurs);
+		if (!substring)
+			return 0;
 		psip->enabled = atoi(substring);
 		return 1;
 	}
@@ -420,14 +422,14 @@ static void atsc_psip_parse_eit(atsc_psip_t *psip, unsigned char *buf, int len, 
 		{
 			best_event_id = event_id;
 			best_start = start_time;
-			memcpy(best_title, title, sizeof(best_title));
+			memcpy(best_title, title, strnlen(title, sizeof(best_title) - 1) + 1);
 			break; /* current event found */
 		}
 		if ((!now_gps || start_time <= now_gps) && start_time >= best_start && title[0])
 		{
 			best_event_id = event_id;
 			best_start = start_time;
-			memcpy(best_title, title, sizeof(best_title));
+			memcpy(best_title, title, strnlen(title, sizeof(best_title) - 1) + 1);
 		}
 	}
 

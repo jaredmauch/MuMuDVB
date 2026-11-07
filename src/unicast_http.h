@@ -43,6 +43,8 @@ enum
 
 
 #define RECV_BUFFER_MULTIPLE 100
+/** Cap HTTP request buffer growth to avoid unbounded realloc from a client */
+#define RECV_BUFFER_MAX (64 * 1024)
 /**@brief the timeout for disconnecting a client with only consecutive errors*/
 #define UNICAST_CONSECUTIVE_ERROR_TIMEOUT 5
 

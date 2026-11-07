@@ -210,14 +210,26 @@ int sdt_channel_rewrite(rewrite_parameters_t *rewrite_vars, mumudvb_channel_t *c
 			int pos=0;
 			//we copy the header
 			memcpy(t_buffer,rewrite_vars->full_sdt->data_full+buffer_pos,SDT_DESCR_LEN);
-			while(pos<descriptors_length)
+			while(pos + 2 <= descriptors_length)
 			{
 				unsigned char descriptor_tag;
 				descriptor_tag = rewrite_vars->full_sdt->data_full[buffer_pos+SDT_DESCR_LEN+pos];
 				unsigned char descriptor_len;
 				descriptor_len = rewrite_vars->full_sdt->data_full[buffer_pos+SDT_DESCR_LEN+pos+1]+2;
+				if (pos + descriptor_len > descriptors_length)
+				{
+					log_message( log_module, MSG_WARN,"SDT descriptor overruns loop (pos %d len %d loop %d), stop\n",
+							pos, descriptor_len, descriptors_length);
+					break;
+				}
 				if(sdt_rewrite_copy_descriptor(descriptor_tag))
 				{
+					if (SDT_DESCR_LEN + loop_length + descriptor_len > MAX_TS_SIZE)
+					{
+						log_message( log_module, MSG_WARN,"SDT rewrite temp buffer full (%d + %d > %d), stop copying descriptors\n",
+								SDT_DESCR_LEN + loop_length, descriptor_len, MAX_TS_SIZE);
+						break;
+					}
 					//We keep the descriptor we copy it
 					log_message( log_module, MSG_FLOOD,"We copy this descriptor : descriptor_tag 0x%02x descriptor_len %d (on %d) loop length %d pos %d\n",descriptor_tag,descriptor_len,descriptors_length, loop_length, pos);
 					memcpy(t_buffer+SDT_DESCR_LEN+loop_length,rewrite_vars->full_sdt->data_full+buffer_pos+SDT_DESCR_LEN+pos,descriptor_len);

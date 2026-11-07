@@ -531,19 +531,25 @@ int socket_to_string(int sock, char *pDest, size_t len)
 
 int sockaddr_to_string(struct sockaddr_storage *sa, char *pDest, size_t len)
 {
+    char host[INET6_ADDRSTRLEN];
     char cPort[6] = { 0, };
     int rv;
+    int n;
 
-    if (!pDest)
+    if (!pDest || len == 0)
         return -1;
+    pDest[0] = '\0';
 
-    /* turn into text string IP */
-    rv = getnameinfo((struct sockaddr *)sa, sizeof(struct sockaddr_storage), pDest, len, cPort, sizeof(cPort), NI_NUMERICHOST | NI_NUMERICSERV);
+    /* turn into text string IP (host buffer sized for address only) */
+    rv = getnameinfo((struct sockaddr *)sa, sizeof(struct sockaddr_storage),
+            host, sizeof(host), cPort, sizeof(cPort),
+            NI_NUMERICHOST | NI_NUMERICSERV);
 
-    /* append port. pDest has enough space beacuse it's IPV6_CHAR_LEN size */
+    /* append port, respecting caller buffer length */
     if (rv == 0) {
-        strcat(pDest, ":");
-        strcat(pDest, cPort);
+        n = snprintf(pDest, len, "%s:%s", host, cPort);
+        if (n < 0 || (size_t)n >= len)
+            return -1;
     }
 
     return rv;

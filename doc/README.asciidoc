@@ -562,6 +562,8 @@ To get the channel list (in basic html) just enter the address `http://10.0.0.1:
 
 To get the channel list (in JSON) just enter the address `http://10.0.0.1:4242/channels_list.json` in your web browser.
 
+On ATSC, when EIT-0 / ETT data has been decoded, these lists include the current `program_name` and `program_description` (empty when unknown).
+
 HTTP unicast and monitoring
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

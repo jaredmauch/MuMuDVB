@@ -52,7 +52,7 @@
 #include <libucsi/atsc/types.h>
 #endif
 
-int autoconf_parse_vct_channel(unsigned char *buf, auto_p_t *auto_p, mumu_chan_p_t *chan_p);
+int autoconf_parse_vct_channel(unsigned char *buf, int remaining, auto_p_t *auto_p, mumu_chan_p_t *chan_p);
 
 static char *log_module="Autoconf: ";
 
@@ -155,12 +155,39 @@ int autoconf_read_psip(auto_p_t *auto_p, mumu_chan_p_t *chan_p)
 
 	number_of_channels_in_section=buf[PSIP_HEADER_LEN]; //This field is the byte just after the PSIP header
 	delta=PSIP_HEADER_LEN+1;
-	log_message( log_module, MSG_DEBUG,"VCT : number_of_channels_in_section %d\n",
-			number_of_channels_in_section);
+	{
+		int section_length = HILO(psip->section_length);
+		int end_limit;
+		if (section_length + 3 > psip_mumu->len_full)
+		{
+			log_message( log_module, MSG_DETAIL, "VCT section length %d exceeds packet %d, skip\n",
+					section_length, psip_mumu->len_full);
+			return 0;
+		}
+		end_limit = 3 + section_length - 4; /* exclude CRC */
+		log_message( log_module, MSG_DEBUG,"VCT : number_of_channels_in_section %d\n",
+				number_of_channels_in_section);
 
-	//We parse the channels
-	for(i=0;i<number_of_channels_in_section;i++)
-		delta+=autoconf_parse_vct_channel(buf+delta,auto_p,chan_p);
+		/* We parse the channels, stopping if a channel would overrun the section */
+		for(i=0;i<number_of_channels_in_section;i++)
+		{
+			int advance;
+			if (delta + PSIP_VCT_LEN > end_limit)
+			{
+				log_message( log_module, MSG_DETAIL,
+						"VCT truncated: channel %d needs more than %d remaining bytes\n",
+						i, end_limit - delta);
+				break;
+			}
+			advance = autoconf_parse_vct_channel(buf+delta, end_limit - delta, auto_p, chan_p);
+			if (advance <= 0)
+			{
+				log_message( log_module, MSG_DETAIL, "VCT channel %d parse failed, stop\n", i);
+				break;
+			}
+			delta += advance;
+		}
+	}
 
 
 
@@ -196,7 +223,7 @@ int autoconf_read_psip(auto_p_t *auto_p, mumu_chan_p_t *chan_p)
  * @param auto_p - The structure containing autoconfiguration parameters
  */
 
-int autoconf_parse_vct_channel(unsigned char *buf, auto_p_t *auto_p, mumu_chan_p_t *chan_p)
+int autoconf_parse_vct_channel(unsigned char *buf, int remaining, auto_p_t *auto_p, mumu_chan_p_t *chan_p)
 {
 	psip_vct_channel_t *vct_channel;
 	char unconverted_short_name[15];//2*7 + 1 (for '\0')
@@ -208,9 +235,22 @@ int autoconf_parse_vct_channel(unsigned char *buf, auto_p_t *auto_p, mumu_chan_p
 #ifdef HAVE_LIBUCSI
 	char long_name[MAX_NAME_LEN] = { 0, };
 #endif
+	int descr_loop_len;
+	int channel_len;
 
 	int mpeg2_service_type=0;
+	if (remaining < PSIP_VCT_LEN)
+		return -1;
 	vct_channel=(psip_vct_channel_t *)buf;
+	descr_loop_len = HILO(vct_channel->descriptor_length);
+	channel_len = PSIP_VCT_LEN + descr_loop_len;
+	if (channel_len > remaining)
+	{
+		log_message( log_module, MSG_DETAIL,
+				"VCT channel descriptors overrun section (%d > %d), skip\n",
+				channel_len, remaining);
+		return -1;
+	}
 
 	// *********** We get the channel short name *******************
 	memcpy (unconverted_short_name, vct_channel->short_name, 14*sizeof(uint8_t));
@@ -243,19 +283,19 @@ int autoconf_parse_vct_channel(unsigned char *buf, auto_p_t *auto_p, mumu_chan_p
 	if(vct_channel->modulation_mode==0x01)
 	{
 		log_message( log_module, MSG_DEBUG, "\tAnalog channel, we skip\n");
-		return PSIP_VCT_LEN + HILO(vct_channel->descriptor_length); //We return the length
+		return channel_len;
 	}
 	if(HILO(vct_channel->channel_tsid)!=auto_p->transport_stream_id)
 	{
 		log_message( log_module, MSG_DEBUG,"Channel for another transponder, we skip :  Channel TSID 0x%x , PAT TSID 0x%x\n",
 				HILO(vct_channel->channel_tsid),
 				auto_p->transport_stream_id);
-		return PSIP_VCT_LEN + HILO(vct_channel->descriptor_length); //We return the length
+		return channel_len;
 	}
 	if(vct_channel->hidden)
 	{
 		log_message( log_module, MSG_DEBUG,"This channel is supposed to be hidden, we skip. Please contact if you want to bypass\n");
-		return PSIP_VCT_LEN + HILO(vct_channel->descriptor_length); //We return the length
+		return channel_len;
 	}
 
 
@@ -285,23 +325,30 @@ int autoconf_parse_vct_channel(unsigned char *buf, auto_p_t *auto_p, mumu_chan_p
 #ifdef HAVE_LIBUCSI //used to decompress the atsc_text_descriptor
 	int descriptor_delta;
 	uint8_t *dest8=NULL; //Pointer for libusci conversion
-	size_t destbufsize=MAX_NAME_LEN;
+	size_t destbufsize=MAX_NAME_LEN - 1;
 	size_t destbufpos=0;
 	int descriptor_len;
 	int atsc_decode_out;
 	int delta_multiple_string_structure; //the beginning of tmultiple string structure
 	//We loop on the different descriptors to find the long channel name
-	for(descriptor_delta=0;descriptor_delta<HILO(vct_channel->descriptor_length);)
+	for(descriptor_delta=0;descriptor_delta + 2 <= descr_loop_len;)
 	{
 		descriptor_len=buf[PSIP_VCT_LEN+descriptor_delta+1];
+		if (descriptor_delta + 2 + descriptor_len > descr_loop_len)
+		{
+			log_message( log_module, MSG_DETAIL, "VCT descriptor overruns descriptor loop, stop\n");
+			break;
+		}
 		if(buf[PSIP_VCT_LEN+descriptor_delta]==0xA0) //Extended channel name descriptor
 		{
 			log_message( log_module, MSG_DEBUG, "Extended channel name descriptor, we try to decode long channel name\n");
 			dest8=(uint8_t *)long_name; //same type size, just the sign change but we don't care
+			destbufsize=MAX_NAME_LEN - 1;
+			destbufpos=0;
 			//check
 			delta_multiple_string_structure=PSIP_VCT_LEN+descriptor_delta+2;//+2 to skip descriptor tag and descriptor len
 			if (atsc_text_validate(((uint8_t*)(buf + delta_multiple_string_structure) ),
-					buf[PSIP_VCT_LEN+descriptor_delta+1]))
+					descriptor_len))
 			{
 				log_message( log_module, MSG_DEBUG, "Error when VALIDATING long channel name, we take the short one\n");
 			}
@@ -323,26 +370,24 @@ int autoconf_parse_vct_channel(unsigned char *buf, auto_p_t *auto_p, mumu_chan_p
 						&destbufpos);
 				if(atsc_decode_out!=-1) //No errors
 				{
-					dest8[atsc_decode_out]='\0';
+					if (destbufpos >= sizeof(long_name))
+						destbufpos = sizeof(long_name) - 1;
+					long_name[destbufpos]='\0';
 					//We take the long one
-					log_message( log_module, MSG_DEBUG, "Decoded long channel name : \"%s\"\n",dest8);
+					log_message( log_module, MSG_DEBUG, "Decoded long channel name : \"%s\"\n",long_name);
 					channel_name=long_name;
 				}
 				else
 					log_message( log_module, MSG_DEBUG, "Error when decoding long channel name, we take the short one\n");
 			}
 		}
-		//Take the short name if error
-		if(!channel_name)
-			channel_name=utf8_short_name;
 
 		//Next descriptor
 		descriptor_delta+=descriptor_len+2;//We add the descriptor_len +2 for descriptor tag and descriptor len
 	}
-#else
-	//We don't use libusci, we don't try to get long channel name
-	channel_name=utf8_short_name;
 #endif
+	if(!channel_name)
+		channel_name=utf8_short_name;
 
 	//************** We update a channel if stored channel  *****************
 	//We base the detection of the services on the PAT, the PSIP gives extra information
@@ -355,6 +400,7 @@ int autoconf_parse_vct_channel(unsigned char *buf, auto_p_t *auto_p, mumu_chan_p
 	}
 	if(chan!=-1)
 	{
+		size_t name_len;
 		log_message( log_module, MSG_DETAIL, "Updating channel %s, program number : 0x%x source_id : 0x%x\n",
 				channel_name,
 				HILO(vct_channel->program_number),
@@ -364,12 +410,15 @@ int autoconf_parse_vct_channel(unsigned char *buf, auto_p_t *auto_p, mumu_chan_p
 		chan_p->channels[chan].free_ca_mode=vct_channel->access_controlled;
 		chan_p->channels[chan].atsc_source_id=HILO(vct_channel->source_id);
 		log_message( log_module, MSG_DEBUG, "access_controlled : 0x%x\n", chan_p->channels[chan].free_ca_mode);
-		memcpy (chan_p->channels[chan].service_name, channel_name, strlen(channel_name));
-		chan_p->channels[chan].service_name[strlen(channel_name)] = '\0';
+		name_len = strlen(channel_name);
+		if (name_len >= sizeof(chan_p->channels[chan].service_name))
+			name_len = sizeof(chan_p->channels[chan].service_name) - 1;
+		memcpy (chan_p->channels[chan].service_name, channel_name, name_len);
+		chan_p->channels[chan].service_name[name_len] = '\0';
 
 	}
 
 	//**************** Work done for this channel -- goodbye *********************
-	return PSIP_VCT_LEN + HILO(vct_channel->descriptor_length); //We return the length
+	return channel_len;
 
 }

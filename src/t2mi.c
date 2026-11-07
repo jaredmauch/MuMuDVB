@@ -85,6 +85,13 @@ int processt2(unsigned char* input_buf, unsigned int input_buf_offset, unsigned 
                 offset+=(uint8_t)(buf[0]);
                 if(t2mi_active) {
                         if( 1 < offset && offset < 184) {
+                                if (t2packetpos + (offset - 1) > (int)sizeof(t2packet)) {
+            				log_message(log_module, MSG_DETAIL, "T2-MI packet overflow on PUSI finish (%d + %u > %zu)\n",
+            						t2packetpos, offset - 1, sizeof(t2packet));
+            				t2mi_active=false;
+            				t2packetpos=0;
+            				return 0;
+                                }
                                 memcpy(&t2packet[t2packetpos],&buf[1],offset-1);
                         } else if (offset >= 184) {
             			log_message(log_module, MSG_DEBUG, "invalid payload offset: %u\n", offset);
@@ -182,12 +189,26 @@ int processt2(unsigned char* input_buf, unsigned int input_buf_offset, unsigned 
 				number of bytes in length, i.e. payload_len+pad_len shall be a multiple of 8. Each padding bit shall have the value 0. 
 			*/
                         if(len > offset) {
+                                if (len - offset > sizeof(t2packet)) {
+            				log_message(log_module, MSG_DETAIL, "T2-MI baseband start too large (%u > %zu)\n",
+            						len - offset, sizeof(t2packet));
+            				t2mi_active=false;
+            				t2packetpos=0;
+            				return 0;
+                                }
                                 memcpy(t2packet,&buf[offset],len-offset);
                                 t2packetpos=len-offset;
                                 t2mi_active=true;
                         }
                 }
         } else if(t2mi_active) {
+                if (t2packetpos + (int)len > (int)sizeof(t2packet)) {
+            		log_message(log_module, MSG_DETAIL, "T2-MI packet overflow on continuation (%d + %u > %zu)\n",
+            				t2packetpos, len, sizeof(t2packet));
+            		t2mi_active=false;
+            		t2packetpos=0;
+            		return 0;
+                }
                 memcpy(t2packet+t2packetpos,buf,len);
                 t2packetpos+=len;
         }

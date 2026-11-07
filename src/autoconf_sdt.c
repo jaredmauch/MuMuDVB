@@ -274,11 +274,16 @@ void parse_service_descriptor(unsigned char *buf, mumudvb_channel_t *chan)
      }
 	 */
 	int len;
-
+	int descr_len;
+	int consumed;
 	int encoding_control_char;
 
+	descr_len = buf[1];
+	if (descr_len < 2)
+		return;
 
 	buf += 2;
+	consumed = 0;
 	//We store the service type
 	chan->service_type=*buf;
 
@@ -287,14 +292,29 @@ void parse_service_descriptor(unsigned char *buf, mumudvb_channel_t *chan)
 
 
 	buf ++; //we skip the service_type
+	consumed++;
+	if (consumed + 1 > descr_len)
+		return;
 	len = *buf; //provider name len
+	buf++;
+	consumed++;
+	if (consumed + len > descr_len)
+		return;
 
-	//we jump the provider_name + the provider_name_len
-	buf += len + 1;
+	//we jump the provider_name
+	buf += len;
+	consumed += len;
 
+	if (consumed + 1 > descr_len)
+		return;
 	//Channel name len
 	len = *buf;
 	buf++;  //we jump the channel_name_len
+	consumed++;
+	if (consumed + len > descr_len)
+		return;
+	if (len >= MAX_NAME_LEN)
+		len = MAX_NAME_LEN - 1;
 
 	//We store the channel name with the raw encoding
 	memcpy (chan->service_name, buf, len);
