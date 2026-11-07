@@ -173,28 +173,33 @@ static int atsc_psip_peek_section_source_id(const unsigned char *ts)
 	return -1;
 }
 
-static int atsc_psip_next_guide_cc(mumudvb_channel_t *channel, int pid)
+/** Find or allocate the per-PID guide-filter slot for this channel. */
+static int atsc_psip_guide_slot(mumudvb_channel_t *channel, int pid)
 {
 	int i;
 	int free_slot = -1;
-	int cc;
 
 	for (i = 0; i < 8; i++)
 	{
 		if (channel->atsc_guide_cc_pids[i] == pid)
-		{
-			cc = channel->atsc_guide_cc_vals[i] & 0x0f;
-			channel->atsc_guide_cc_vals[i] = (cc + 1) & 0x0f;
-			return cc;
-		}
+			return i;
 		if (free_slot < 0 && channel->atsc_guide_cc_pids[i] < 0)
 			free_slot = i;
 	}
 	if (free_slot < 0)
-		free_slot = 0; /* overwrite oldest slot if full */
+		free_slot = 0; /* overwrite first slot if full */
 	channel->atsc_guide_cc_pids[free_slot] = pid;
-	channel->atsc_guide_cc_vals[free_slot] = 1;
-	return 0;
+	channel->atsc_guide_cc_vals[free_slot] = 0;
+	channel->atsc_guide_match[free_slot] = 0;
+	return free_slot;
+}
+
+static int atsc_psip_next_guide_cc(mumudvb_channel_t *channel, int pid)
+{
+	int slot = atsc_psip_guide_slot(channel, pid);
+	int cc = channel->atsc_guide_cc_vals[slot] & 0x0f;
+	channel->atsc_guide_cc_vals[slot] = (cc + 1) & 0x0f;
+	return cc;
 }
 
 int atsc_psip_filter_guide_packet(atsc_psip_t *psip, mumudvb_channel_t *channel,
@@ -203,28 +208,29 @@ int atsc_psip_filter_guide_packet(atsc_psip_t *psip, mumudvb_channel_t *channel,
 	int source_id;
 	int match;
 	int forward = 0;
+	int slot;
 
 	if (!psip || !psip->sort_guide || !channel || !ts_packet || !out188)
 		return 0;
 
+	slot = atsc_psip_guide_slot(channel, pid);
+
 	/* Until VCT maps source_id, keep full guide so clients are not left empty */
 	if (channel->atsc_source_id <= 0)
 		forward = 1;
-	else if (ts_packet[1] & 0x40) /* PUSI: new section decision */
+	else if (ts_packet[1] & 0x40) /* PUSI: new section decision for this PID only */
 	{
 		source_id = atsc_psip_peek_section_source_id(ts_packet);
 		if (source_id <= 0)
 		{
-			channel->atsc_guide_filter_pid = pid;
-			channel->atsc_guide_filter_match = 0;
+			channel->atsc_guide_match[slot] = 0;
 			return 0;
 		}
 		match = (source_id == channel->atsc_source_id) ? 1 : 0;
-		channel->atsc_guide_filter_pid = pid;
-		channel->atsc_guide_filter_match = match;
+		channel->atsc_guide_match[slot] = match;
 		forward = match;
 	}
-	else if (channel->atsc_guide_filter_pid == pid && channel->atsc_guide_filter_match)
+	else if (channel->atsc_guide_match[slot])
 		forward = 1;
 
 	if (!forward)

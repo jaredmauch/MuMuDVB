@@ -62,6 +62,12 @@ static char *log_module="Unicast : ";
  * @brief Send a list of clients.
  * @param unicast_client the client list to output
  */
+/* Dedicated per-channel socket if set, otherwise the master port_http (bysid access). */
+static int channel_http_unicast_port(const mumudvb_channel_t *channel, int master_unicast_port)
+{
+	return channel->unicast_port ? channel->unicast_port : master_unicast_port;
+}
+
 int unicast_send_client_list_js (unicast_client_t *unicast_client, struct unicast_reply *reply)
 {
 	int client = 0;
@@ -94,7 +100,7 @@ int unicast_send_client_list_js (unicast_client_t *unicast_client, struct unicas
  * @param reply the unicast_reply where we will write the info.
  *
  **/
-int unicast_send_channel_list_js (int number_of_channels, mumudvb_channel_t *channels, void *scam_vars_v, struct unicast_reply *reply)
+int unicast_send_channel_list_js (int number_of_channels, mumudvb_channel_t *channels, void *scam_vars_v, int master_unicast_port, struct unicast_reply *reply)
 {
 	int curr_channel;
 #ifndef ENABLE_SCAM_SUPPORT
@@ -121,7 +127,7 @@ int unicast_send_channel_list_js (int number_of_channels, mumudvb_channel_t *cha
 		unicast_reply_write(reply, "\t\"is_up\": %d,\n", channels[curr_channel].has_traffic);
 		unicast_reply_write(reply, "\t\"pcr_pid\": %d,\n", channels[curr_channel].pid_i.pcr_pid);
 		unicast_reply_write(reply, "\t\"pmt_version\": %d,\n", channels[curr_channel].pmt_version);
-		unicast_reply_write(reply, "\t\"unicast_port\": %d,\n", channels[curr_channel].unicast_port);
+		unicast_reply_write(reply, "\t\"unicast_port\": %d,\n", channel_http_unicast_port(&channels[curr_channel], master_unicast_port));
 		unicast_reply_write(reply, "\t\"service_id\": %d,\n", channels[curr_channel].service_id);
 		unicast_reply_write(reply, "\t\"service_type\": \"%s\",\n", service_type_to_str(channels[curr_channel].service_type));
 		unicast_reply_write(reply, "\t\"pids_num\": %d,\n", channels[curr_channel].pid_i.num_pids);
@@ -178,7 +184,7 @@ int unicast_send_channel_list_js (int number_of_channels, mumudvb_channel_t *cha
  * @param channels the channels array
  * @param Socket the socket on wich the information have to be sent
  */
-int unicast_send_streamed_channels_list_js (int number_of_channels, mumudvb_channel_t *channels, void *scam_vars_v, int Socket)
+int unicast_send_streamed_channels_list_js (int number_of_channels, mumudvb_channel_t *channels, void *scam_vars_v, int master_unicast_port, int Socket)
 {
 #ifndef ENABLE_SCAM_SUPPORT
 		(void) scam_vars_v; //to make compiler happy
@@ -195,9 +201,9 @@ int unicast_send_streamed_channels_list_js (int number_of_channels, mumudvb_chan
 	}
 	unicast_reply_write(reply, "[\n");
 #ifndef ENABLE_SCAM_SUPPORT
-	unicast_send_channel_list_js (number_of_channels, channels, scam_vars_v, reply);
+	unicast_send_channel_list_js (number_of_channels, channels, scam_vars_v, master_unicast_port, reply);
 #else
-	unicast_send_channel_list_js (number_of_channels, channels, scam_vars, reply);
+	unicast_send_channel_list_js (number_of_channels, channels, scam_vars, master_unicast_port, reply);
 #endif
 	unicast_reply_write(reply, "]\n");
 
@@ -342,7 +348,7 @@ unicast_send_channel_traffic_js (int number_of_channels, mumudvb_channel_t *chan
  * @param fds the frontend device structure
  */
 int
-unicast_send_json_state (int number_of_channels, mumudvb_channel_t *channels, int Socket, strength_parameters_t *strengthparams, auto_p_t *auto_p, void *cam_p_v, void *scam_vars_v)
+unicast_send_json_state (int number_of_channels, mumudvb_channel_t *channels, int Socket, strength_parameters_t *strengthparams, auto_p_t *auto_p, void *cam_p_v, void *scam_vars_v, int master_unicast_port)
 {
 	/***************************** PLEASE KEEP IN SYNC WITH THE XML VERSIONS ************************/
 #ifndef ENABLE_CAM_SUPPORT
@@ -532,9 +538,9 @@ unicast_send_json_state (int number_of_channels, mumudvb_channel_t *channels, in
 	// Channels list
 	unicast_reply_write(reply,"\"channels\": [");
 #ifndef ENABLE_SCAM_SUPPORT
-	unicast_send_channel_list_js (number_of_channels, channels, scam_vars_v, reply);
+	unicast_send_channel_list_js (number_of_channels, channels, scam_vars_v, master_unicast_port, reply);
 #else
-	unicast_send_channel_list_js (number_of_channels, channels, scam_vars, reply);
+	unicast_send_channel_list_js (number_of_channels, channels, scam_vars, master_unicast_port, reply);
 #endif
 	unicast_reply_write(reply, "]\n");
 
@@ -635,7 +641,7 @@ int unicast_send_client_list_xml (unicast_client_t *unicast_client, struct unica
  * @param reply the unicast_reply where we will write the info.
  *
  **/
-int unicast_send_channel_list_xml (int number_of_channels, mumudvb_channel_t *channels, void *scam_vars_v, struct unicast_reply *reply)
+int unicast_send_channel_list_xml (int number_of_channels, mumudvb_channel_t *channels, void *scam_vars_v, int master_unicast_port, struct unicast_reply *reply)
 {
 
 #ifndef ENABLE_SCAM_SUPPORT
@@ -669,7 +675,7 @@ int unicast_send_channel_list_xml (int number_of_channels, mumudvb_channel_t *ch
 		unicast_reply_write(reply, "\t\t<pmt_pid>%d</pmt_pid>\n",channels[curr_channel].pid_i.pmt_pid);
 		unicast_reply_write(reply, "\t\t<pmt_version>%d</pmt_version>\n",channels[curr_channel].pmt_version);
 		unicast_reply_write(reply, "\t\t<pcr_pid>%d</pcr_pid>\n",channels[curr_channel].pid_i.pcr_pid);
-		unicast_reply_write(reply, "\t\t<unicast_port>%d</unicast_port>\n",channels[curr_channel].unicast_port);
+		unicast_reply_write(reply, "\t\t<unicast_port>%d</unicast_port>\n",channel_http_unicast_port(&channels[curr_channel], master_unicast_port));
 		unicast_reply_write(reply, "\t\t<unicast_client_count>%d</unicast_client_count>\n", channels[curr_channel].num_clients);
 		// SCAM information
 #ifdef ENABLE_SCAM_SUPPORT
@@ -717,7 +723,7 @@ int unicast_send_channel_list_xml (int number_of_channels, mumudvb_channel_t *ch
  * @param fds the frontend device structure
  */
 int
-unicast_send_xml_state (int number_of_channels, mumudvb_channel_t *channels, int Socket, strength_parameters_t *strengthparams, auto_p_t *auto_p, void *cam_p_v, void *scam_vars_v)
+unicast_send_xml_state (int number_of_channels, mumudvb_channel_t *channels, int Socket, strength_parameters_t *strengthparams, auto_p_t *auto_p, void *cam_p_v, void *scam_vars_v, int master_unicast_port)
 {
 
 	/***************************** PLEASE KEEP IN SYNC WITH THE JSON VERSIONS ************************/
@@ -886,7 +892,7 @@ unicast_send_xml_state (int number_of_channels, mumudvb_channel_t *channels, int
 #endif
 
 	// channel list
-	unicast_send_channel_list_xml (number_of_channels, channels, scam_vars_v, reply);
+	unicast_send_channel_list_xml (number_of_channels, channels, scam_vars_v, master_unicast_port, reply);
 
 	// Ending XML content
 	unicast_reply_write(reply, "</mumudvb>\n");

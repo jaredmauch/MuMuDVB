@@ -99,17 +99,17 @@ unicast_send_play_list_unicast (int number_of_channels, mumudvb_channel_t *chann
 int
 unicast_send_play_list_multicast (int number_of_channels, mumudvb_channel_t* channels, int Socket, int vlc, unicast_parameters_t *unicast_vars);
 int
-unicast_send_streamed_channels_list_js (int number_of_channels, mumudvb_channel_t *channels, void* cam_p_v, int Socket);
+unicast_send_streamed_channels_list_js (int number_of_channels, mumudvb_channel_t *channels, void* cam_p_v, int master_unicast_port, int Socket);
 int
 unicast_send_signal_power_js (int Socket, strength_parameters_t *strengthparams);
 int
 unicast_send_channel_traffic_js (int number_of_channels, mumudvb_channel_t *channels, int Socket);
 int
-unicast_send_json_state (int number_of_channels, mumudvb_channel_t* channels, int Socket, strength_parameters_t* strengthparams, auto_p_t* auto_p, void* cam_p_v, void* scam_vars_v);
+unicast_send_json_state (int number_of_channels, mumudvb_channel_t* channels, int Socket, strength_parameters_t* strengthparams, auto_p_t* auto_p, void* cam_p_v, void* scam_vars_v, int master_unicast_port);
 int
 unicast_send_prometheus (int number_of_channels, mumudvb_channel_t* channels, int Socket, strength_parameters_t* strengthparams);
 int
-unicast_send_xml_state (int number_of_channels, mumudvb_channel_t* channels, int Socket, strength_parameters_t* strengthparams, auto_p_t* auto_p, void* cam_p_v, void* scam_vars_v);
+unicast_send_xml_state (int number_of_channels, mumudvb_channel_t* channels, int Socket, strength_parameters_t* strengthparams, auto_p_t* auto_p, void* cam_p_v, void* scam_vars_v, int master_unicast_port);
 int
 unicast_send_cam_menu (int Socket, void *cam_p);
 int
@@ -921,13 +921,13 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 			else if(strstr(client->buffer +pos ,"/channels_list.json ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"Channel list Json\n");
-				unicast_send_streamed_channels_list_js (number_of_channels, channels, scam_vars, client->Socket);
+				unicast_send_streamed_channels_list_js (number_of_channels, channels, scam_vars, unicast_vars->portOut, client->Socket);
 				return -2; //We close the connection afterwards
 			}
 			else if(strstr(client->buffer +pos ,"/monitor/state.json ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"HTTP request for state in Json\n");
-				unicast_send_json_state(number_of_channels, channels, client->Socket, strengthparams, auto_p, cam_p, scam_vars);
+				unicast_send_json_state(number_of_channels, channels, client->Socket, strengthparams, auto_p, cam_p, scam_vars, unicast_vars->portOut);
 				return -2; //We close the connection afterwards
 			}
 			else if(strstr(client->buffer +pos ,"/monitor/signal_power.json ")==(client->buffer +pos))
@@ -945,7 +945,7 @@ int unicast_handle_message(unicast_parameters_t *unicast_vars,
 			else if(strstr(client->buffer +pos ,"/monitor/state.xml ")==(client->buffer +pos))
 			{
 				log_message( log_module, MSG_DETAIL,"HTTP request for XML State\n");
-				unicast_send_xml_state(number_of_channels, channels, client->Socket, strengthparams, auto_p, cam_p, scam_vars);
+				unicast_send_xml_state(number_of_channels, channels, client->Socket, strengthparams, auto_p, cam_p, scam_vars, unicast_vars->portOut);
 				return -2; //We close the connection afterwards
 			}
 			//statistics, text version

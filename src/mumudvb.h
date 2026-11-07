@@ -357,13 +357,11 @@ typedef struct mumudvb_channel_t{
 	char atsc_program_title[MAX_NAME_LEN];
 	/** Extended description from ATSC event ETT (when present) */
 	char atsc_program_description[MAX_NAME_LEN];
-	/** While sorting ATSC guide: PID of the section we are currently filtering */
-	int atsc_guide_filter_pid;
-	/** While sorting ATSC guide: forward continuation packets for atsc_guide_filter_pid */
-	int atsc_guide_filter_match;
-	/** Continuity counters for forwarded ATSC guide PIDs (rewritten so drops don't gap CC) */
+	/** Continuity counters / section-match state for forwarded ATSC guide PIDs (per PID) */
 	int atsc_guide_cc_pids[8];
 	int atsc_guide_cc_vals[8];
+	/** 1 = forward continuations for the PID in the parallel atsc_guide_cc_pids slot */
+	int atsc_guide_match[8];
 
 	/* The PID information for this channel*/
 	pid_i_t pid_i;
