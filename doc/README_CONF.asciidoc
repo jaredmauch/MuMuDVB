@@ -174,11 +174,11 @@ If needed, specify the modulation using the option `modulation`.
 [width="80%",cols="2,6,1,5",options="header"]
 |==================================================================================================================
 |Parameter name |Description | Default value |Comments
-|atsc_psip_eit |Parse the ATSC Master Guide Table (MGT), forward PSIP EIT/ETT PIDs, and decode EIT-0 / ETT text | 1 | 0 or 1. The base PSIP PID (8187) with TVCT/CVCT/MGT/STT is always forwarded on ATSC. When enabled, EIT/ETT PIDs from the MGT are demuxed and sent to clients; EIT-0 program titles and ETT-0 descriptions are also decoded and logged (e.g. `Now playing on "WDIV-HD": "Evening News"`). Set to 0 to disable. With `sort_eit=1`, each channel (unicast `/bysid` or multicast) only receives EIT/ETT sections for its own `source_id`, not the whole mux guide.
+|atsc_psip_eit |Parse the ATSC Master Guide Table (MGT), forward PSIP EIT/ETT PIDs, and decode EIT-0 / ETT text | 1 | 0 or 1. The base PSIP PID (8187) with TVCT/CVCT/MGT/STT is always forwarded on ATSC. When enabled, EIT/ETT PIDs from the MGT are demuxed and sent to clients; EIT-0 program titles and ETT-0 descriptions are also decoded and logged (e.g. `Now playing on "WDIV-HD": "Evening News"`). Set to 0 to disable. With `sort_eit=1`, each channel only receives the original EIT/ETT TS packets for its own VCT `source_id` (other services' guide sections are dropped).
 |==================================================================================================================
 
 [NOTE]
-ATSC channel/call-sign names come from TVCT/CVCT on PID 8187. Titles of the program currently airing come from PSIP EIT-0 (and optional ETT text) on PIDs advertised by the MGT — not from DVB PID 18. Decoded titles stay in MuMuDVB logs/state/HTTP. With `sort_eit=1`, each channel's TS only gets that channel's EIT/ETT sections (matched by VCT `source_id`); without it, the full mux guide PIDs are forwarded.
+ATSC channel/call-sign names come from TVCT/CVCT on PID 8187. Titles of the program currently airing come from PSIP EIT-0 (and optional ETT text) on PIDs advertised by the MGT — not from DVB PID 18. Decoded titles stay in MuMuDVB logs/state/HTTP. With `sort_eit=1`, each channel's TS keeps only that channel's EIT/ETT packets (matched by VCT `source_id`, original TS not rewritten); without it, the full mux guide PIDs are forwarded.
 
 
 [[other_global]]
