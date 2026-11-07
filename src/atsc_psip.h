@@ -39,8 +39,9 @@
 typedef struct atsc_psip_t {
 	/** Enable MGT parsing, EIT/ETT PID forwarding and EIT-0/ETT decode (default 1). */
 	int enabled;
-	/** When set (typically via sort_eit=1), only forward EIT/ETT TS packets whose
-	 * section belongs to each channel's atsc_source_id (raw packets, not rewritten). */
+	/** When set, only forward EIT/ETT TS packets whose section belongs to each
+	 * channel's atsc_source_id (raw packets, not rewritten). Currently left off
+	 * so clients get full mux guide passthrough. */
 	int sort_guide;
 	/** Last seen MGT version_number, -1 if none yet. */
 	int mgt_version;

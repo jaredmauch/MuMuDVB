@@ -1248,14 +1248,12 @@ int main (int argc, char **argv)
 	if(tune_p.fe_type==FE_ATSC)
 	{
 		chan_p.asked_pid[PSIP_PID]=PID_ASKED;
-		/* sort_eit=1 also sorts ATSC EIT/ETT by channel source_id */
-		if(rewrite_vars.rewrite_eit == OPTION_ON)
-			atsc_psip.sort_guide = 1;
+		/* Full EIT/ETT passthrough for validation; per-source_id filter stays off
+		 * (sort_eit remains DVB-only). Re-enable atsc_psip.sort_guide later if needed. */
+		atsc_psip.sort_guide = 0;
 		if(atsc_psip.enabled)
 			log_message(log_module, MSG_INFO,
-					"ATSC: will parse MGT to forward PSIP EIT/ETT PIDs (disable with atsc_psip_eit=0)%s\n",
-					atsc_psip.sort_guide ?
-					"; sort_eit=1 so each channel only gets its own guide sections" : "");
+					"ATSC: will parse MGT to forward full PSIP EIT/ETT PIDs (disable with atsc_psip_eit=0)\n");
 	}
 
 	/*****************************************************/
