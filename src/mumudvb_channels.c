@@ -66,6 +66,8 @@ int mumu_init_chan(mumudvb_channel_t *chan)
 	chan->atsc_event_id = -1;
 	chan->atsc_program_title[0] = '\0';
 	chan->atsc_program_description[0] = '\0';
+	chan->atsc_guide_filter_pid = -1;
+	chan->atsc_guide_filter_match = 0;
 	//We alloc the channel pmt_packet (useful for autoconf and cam)
 	if(chan->pmt_packet==NULL)
 	{

@@ -520,12 +520,12 @@ int socket_to_string(int sock, char *pDest, size_t len)
     if (!pDest)
         return -1;
 
-    /* get sockaddr for socket */
-    rv = getsockname(sock, (struct sockaddr *)&addr, &l);
+    /* Peer (remote client) address — not the local/server side of the socket */
+    rv = getpeername(sock, (struct sockaddr *)&addr, &l);
     if (rv == 0)
         return sockaddr_to_string(&addr, pDest, len);
 
-    log_message(log_module, MSG_ERROR, "getsockname failed : %s", strerror(errno));
+    log_message(log_module, MSG_ERROR, "getpeername failed : %s", strerror(errno));
     return rv;
 }
 
@@ -561,7 +561,8 @@ int socket_to_string_port(int sock, char *pDestAddr, size_t destLen, char *pDest
     socklen_t l = sizeof(struct sockaddr_storage);
     int rv;
 
-    rv = getsockname(sock, (struct sockaddr *)&sa, &l);
+    /* Peer (remote client) address/port used for remote_address in monitor JSON/XML */
+    rv = getpeername(sock, (struct sockaddr *)&sa, &l);
     if (rv == 0)
         rv = getnameinfo((struct sockaddr *)&sa, sizeof(struct sockaddr_storage), pDestAddr, destLen, pDestPort, portLen, NI_NUMERICHOST | NI_NUMERICSERV);
 
