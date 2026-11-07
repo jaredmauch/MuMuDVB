@@ -1223,9 +1223,6 @@ static frequency_scan_status_t frequency_scan_status[256]; // Max 16 cards * 16 
 static int frequency_scan_count = 0;
 static pthread_mutex_t utilization_global_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Additional mutex for global static variables
-static pthread_mutex_t global_static_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 // Helper function to check if a card/frequency combination is known to be unusable
 static int is_card_frequency_unusable(int card_id, double frequency)
 {
