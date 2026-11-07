@@ -240,7 +240,8 @@ int string_comput(char *string)
 	tempchar=malloc(sizeof(char)*(len+1));
 	if (tempchar == NULL)
 		return 0;
-	strncpy(tempchar,string,len);
+	/* memcpy + explicit NUL: strncpy(len==strlen) triggers -Wstringop-truncation */
+	memcpy(tempchar,string,(size_t)len);
 	tempchar[len]='\0';
 	number1=string_mult(tempchar);
 	free(tempchar);
@@ -265,7 +266,9 @@ int string_mult(char *string)
 		return atoi(string);
 	len=multpos-string;
 	tempchar=malloc(sizeof(char)*(len+1));
-	strncpy(tempchar,string,len);
+	if (tempchar == NULL)
+		return 0;
+	memcpy(tempchar,string,(size_t)len);
 	tempchar[len]='\0';
 	number1=atoi(tempchar);
 	free(tempchar);

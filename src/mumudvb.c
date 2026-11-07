@@ -1636,14 +1636,14 @@ int main (int argc, char **argv)
 			/******************************************************/
 
 			/******************************************************/
-			// ATSC PSIP MGT: discover EIT/ETT PIDs to forward
+			// ATSC PSIP: MGT discovery + EIT-0/ETT title/description
 			/******************************************************/
 			if(!ScramblingControl &&
-					(pid == PSIP_PID) &&
 					(tune_p.fe_type == FE_ATSC) &&
-					atsc_psip.enabled)
+					atsc_psip.enabled &&
+					(pid == PSIP_PID || atsc_psip_is_extra_pid(&atsc_psip, pid)))
 			{
-				iRet = atsc_psip_new_packet(&atsc_psip, actual_ts_packet, &chan_p, &fds,
+				iRet = atsc_psip_new_packet(&atsc_psip, pid, actual_ts_packet, &chan_p, &fds,
 						tune_p.card_dev_path, tune_p.tuner);
 				if(iRet)
 				{

@@ -25,7 +25,6 @@
 #include "scam_decsa.h"
 #endif
 
-static char *log_module="Unicast : ";
 void eit_display_contents(mumudvb_ts_packet_t *full_eit, struct unicast_reply* reply);
 
 void

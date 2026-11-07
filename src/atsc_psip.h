@@ -1,7 +1,7 @@
 /*
  * MuMuDVB - Stream a DVB/ATSC transport stream.
  *
- * ATSC PSIP helpers: parse MGT and forward EIT/ETT PIDs.
+ * ATSC PSIP helpers: parse MGT, forward EIT/ETT PIDs, decode EIT-0/ETT text.
  *
  * Copyright notice:
  *
@@ -21,8 +21,11 @@
 /** Maximum secondary PSIP PIDs discovered from MGT (EIT/ETT). */
 #define MAX_ATSC_PSIP_EXTRA_PIDS 256
 
-/** ATSC MGT table_id (A/65). */
+/** ATSC table_id values (A/65). */
 #define ATSC_TABLE_ID_MGT 0xC7
+#define ATSC_TABLE_ID_EIT 0xCB
+#define ATSC_TABLE_ID_ETT 0xCC
+#define ATSC_TABLE_ID_STT 0xCD
 
 /** MGT table_type values we forward (A/65 Table 6.3). */
 #define ATSC_TABLE_TYPE_CHANNEL_ETT 0x0004
@@ -31,14 +34,26 @@
 #define ATSC_TABLE_TYPE_ETT_FIRST    0x0200
 #define ATSC_TABLE_TYPE_ETT_LAST     0x027F
 
-/**@brief Runtime state for ATSC PSIP EIT/ETT pass-through */
+/**@brief Runtime state for ATSC PSIP EIT/ETT pass-through and parsing */
 typedef struct atsc_psip_t {
-	/** Enable MGT parsing and EIT/ETT PID forwarding (default 1). */
+	/** Enable MGT parsing, EIT/ETT PID forwarding and EIT-0/ETT decode (default 1). */
 	int enabled;
 	/** Last seen MGT version_number, -1 if none yet. */
 	int mgt_version;
-	/** Section assembler for MGT on the base PSIP PID. */
+	/** GPS seconds from STT when available; 0 if unknown. */
+	uint32_t gps_time;
+	int have_gps_time;
+	/** PID for EIT-0 (MGT table_type 0x0100), 0 if unknown. */
+	int eit0_pid;
+	/** PID for event ETT-0 (MGT table_type 0x0200), 0 if unknown. */
+	int ett0_pid;
+	/** PID for channel ETT (MGT table_type 0x0004), 0 if unknown. */
+	int channel_ett_pid;
+	/** Section assemblers */
 	mumudvb_ts_packet_t *mgt_packet;
+	mumudvb_ts_packet_t *eit0_packet;
+	mumudvb_ts_packet_t *ett0_packet;
+	mumudvb_ts_packet_t *channel_ett_packet;
 	/** Extra PIDs (EIT/ETT) to ask and always forward on ATSC. */
 	int extra_pids[MAX_ATSC_PSIP_EXTRA_PIDS];
 	int num_extra_pids;
@@ -49,7 +64,8 @@ void atsc_psip_free(atsc_psip_t *psip);
 int atsc_psip_read_configuration(atsc_psip_t *psip, char *substring);
 int atsc_psip_is_extra_pid(const atsc_psip_t *psip, int pid);
 void atsc_psip_mark_asked(atsc_psip_t *psip, mumu_chan_p_t *chan_p);
-int atsc_psip_new_packet(atsc_psip_t *psip, unsigned char *ts_packet,
+/** Feed a TS packet; pid must be the packet's PID. */
+int atsc_psip_new_packet(atsc_psip_t *psip, int pid, unsigned char *ts_packet,
 		mumu_chan_p_t *chan_p, fds_t *fds, char *card_base_path, int tuner);
 
 #endif

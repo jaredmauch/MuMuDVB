@@ -349,6 +349,14 @@ typedef struct mumudvb_channel_t{
 	char name[MAX_NAME_LEN];
 	MU_F_T(name)
 	char service_name[MAX_NAME_LEN];
+	/** ATSC PSIP source_id from TVCT/CVCT (for EIT/ETT matching), -1 if unknown */
+	int atsc_source_id;
+	/** Current ATSC event_id from EIT-0, -1 if unknown */
+	int atsc_event_id;
+	/** Current program title from ATSC EIT-0 */
+	char atsc_program_title[MAX_NAME_LEN];
+	/** Extended description from ATSC event ETT (when present) */
+	char atsc_program_description[MAX_NAME_LEN];
 
 	/* The PID information for this channel*/
 	pid_i_t pid_i;

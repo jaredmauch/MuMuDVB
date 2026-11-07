@@ -132,15 +132,22 @@ int hls_entry_initialize(mumudvb_channel_t *actual_channel, hls_open_fds_t *hls_
 	hls_entry->filenames_num = unicast_vars->hls_rotate_count + 2; // names count for all chunks plus stream and delete names
 	hls_entry->filenames = calloc(1, hls_entry->filenames_num * sizeof(hls_file_t)); // allocate and clear
 
-	strncpy(hls_entry->path, unicast_vars->hls_storage_dir, LEN_MAX);
+	{
+		const char *storage = unicast_vars->hls_storage_dir ? unicast_vars->hls_storage_dir : "";
+		size_t path_len = strnlen(storage, sizeof(hls_entry->path) - 1);
+		memcpy(hls_entry->path, storage, path_len);
+		hls_entry->path[path_len] = '\0';
+	}
 	sprintf(hls_entry->name_playlist, "%d.m3u8", actual_channel->service_id);
 
 	sprintf(hls_entry->filenames[0].name, "%d_%u.ts", actual_channel->service_id, access_time);	// construct uniq filename here
 
-	if (strlen(actual_channel->user_name)) {
-	    strncpy(hls_entry->name, actual_channel->user_name, LEN_MAX);
-	} else {
-	    strncpy(hls_entry->name, actual_channel->name, LEN_MAX);
+	{
+		const char *chan_name = strlen(actual_channel->user_name) ?
+				actual_channel->user_name : actual_channel->name;
+		size_t name_len = strnlen(chan_name, sizeof(hls_entry->name) - 1);
+		memcpy(hls_entry->name, chan_name, name_len);
+		hls_entry->name[name_len] = '\0';
 	}
 
 	char path_stream[PATH_MAX];

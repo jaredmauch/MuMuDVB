@@ -62,6 +62,10 @@ int mumu_init_chan(mumudvb_channel_t *chan)
 	chan->scrambled_channel = 0;
 	chan->generated_pat_version=-1;
 	chan->generated_sdt_version=-1;
+	chan->atsc_source_id = -1;
+	chan->atsc_event_id = -1;
+	chan->atsc_program_title[0] = '\0';
+	chan->atsc_program_description[0] = '\0';
 	//We alloc the channel pmt_packet (useful for autoconf and cam)
 	if(chan->pmt_packet==NULL)
 	{
@@ -374,8 +378,11 @@ void update_chan_net(mumu_chan_p_t *chan_p, auto_p_t *auto_p, multi_p_t *multi_p
 				//SID
 				sprintf(number,"%04x",chan_p->channels[ichan].service_id);
 				mumu_string_replace(ip,&len,0,"%sid",number);
-				strncpy(chan_p->channels[ichan].ip6Out,ip,IPV6_CHAR_LEN);
-				chan_p->channels[ichan].ip6Out[IPV6_CHAR_LEN-1]='\0';
+				{
+					size_t ip6_len = strnlen(ip, sizeof(chan_p->channels[ichan].ip6Out) - 1);
+					memcpy(chan_p->channels[ichan].ip6Out, ip, ip6_len);
+					chan_p->channels[ichan].ip6Out[ip6_len] = '\0';
+				}
 			}
 		}
 

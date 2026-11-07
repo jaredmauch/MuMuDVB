@@ -355,12 +355,14 @@ int autoconf_parse_vct_channel(unsigned char *buf, auto_p_t *auto_p, mumu_chan_p
 	}
 	if(chan!=-1)
 	{
-		log_message( log_module, MSG_DETAIL, "Updating channel %s, program number : 0x%x \n",
+		log_message( log_module, MSG_DETAIL, "Updating channel %s, program number : 0x%x source_id : 0x%x\n",
 				channel_name,
-				HILO(vct_channel->program_number));
+				HILO(vct_channel->program_number),
+				HILO(vct_channel->source_id));
 		//we store the data
 		chan_p->channels[chan].service_type=mpeg2_service_type;
 		chan_p->channels[chan].free_ca_mode=vct_channel->access_controlled;
+		chan_p->channels[chan].atsc_source_id=HILO(vct_channel->source_id);
 		log_message( log_module, MSG_DEBUG, "access_controlled : 0x%x\n", chan_p->channels[chan].free_ca_mode);
 		memcpy (chan_p->channels[chan].service_name, channel_name, strlen(channel_name));
 		chan_p->channels[chan].service_name[strlen(channel_name)] = '\0';
