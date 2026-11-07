@@ -1248,6 +1248,69 @@ unicast_send_streamed_channels_list (int number_of_channels, mumudvb_channel_t *
 	return 0;
 }
 
+/** Escape text for use inside an M3U EXTINF attribute value. */
+static void m3u_escape_attr(char *dst, size_t dst_size, const char *src)
+{
+	size_t di = 0;
+	if (!dst || dst_size == 0)
+		return;
+	if (!src)
+	{
+		dst[0] = '\0';
+		return;
+	}
+	while (*src && di + 1 < dst_size)
+	{
+		char c = *src++;
+		if (c == '"' || c == '\r' || c == '\n')
+			c = ' ';
+		dst[di++] = c;
+	}
+	dst[di] = '\0';
+}
+
+/** Write #EXTINF for a channel, including ATSC now-playing title/description when known. */
+static void unicast_reply_write_channel_extinf(struct unicast_reply *reply, mumudvb_channel_t *channel)
+{
+	const char *name = (channel->name[0]) ? channel->name : "Unknown";
+	char display[MAX_NAME_LEN * 2 + 4];
+	char attr_name[MAX_NAME_LEN];
+	char attr_title[MAX_NAME_LEN];
+	char attr_desc[MAX_NAME_LEN];
+	size_t nlen;
+
+	m3u_escape_attr(attr_name, sizeof(attr_name), name);
+
+	nlen = strlen(name);
+	if (nlen >= sizeof(display))
+		nlen = sizeof(display) - 1;
+	memcpy(display, name, nlen);
+	display[nlen] = '\0';
+	if (channel->atsc_program_title[0] && nlen + 4 < sizeof(display))
+	{
+		memcpy(display + nlen, " - ", 3);
+		nlen += 3;
+		strncpy(display + nlen, channel->atsc_program_title, sizeof(display) - nlen - 1);
+		display[sizeof(display) - 1] = '\0';
+	}
+
+	if (channel->atsc_program_title[0] || channel->atsc_program_description[0])
+	{
+		m3u_escape_attr(attr_title, sizeof(attr_title), channel->atsc_program_title);
+		m3u_escape_attr(attr_desc, sizeof(attr_desc), channel->atsc_program_description);
+		unicast_reply_write(reply,
+				"#EXTINF:0 tvg-name=\"%s\" tvg-title=\"%s\" tvg-description=\"%s\",%s\r\n",
+				attr_name,
+				attr_title,
+				attr_desc,
+				display);
+	}
+	else
+	{
+		unicast_reply_write(reply, "#EXTINF:0,%s\r\n", name);
+	}
+}
+
 
 /** @brief Send a basic text file containig the playlist
  *
@@ -1297,16 +1360,16 @@ unicast_send_play_list_unicast (int number_of_channels, mumudvb_channel_t *chann
 
 			if(!perport)
 			{
-				unicast_reply_write(reply, "#EXTINF:0,%s\r\nhttp://%s:%d/bysid/%d\r\n",
-						channels[curr_channel].name,
+				unicast_reply_write_channel_extinf(reply, &channels[curr_channel]);
+				unicast_reply_write(reply, "http://%s:%d/bysid/%d\r\n",
 						http_buf,
 						unicast_portOut ,
 						channels[curr_channel].service_id);
 			}
 			else if(channels[curr_channel].unicast_port)
 			{
-				unicast_reply_write(reply, "#EXTINF:0,%s\r\nhttp://%s:%d/\r\n",
-						channels[curr_channel].name,
+				unicast_reply_write_channel_extinf(reply, &channels[curr_channel]);
+				unicast_reply_write(reply, "http://%s:%d/\r\n",
 						http_buf,
 						channels[curr_channel].unicast_port);
 			}
@@ -1415,8 +1478,8 @@ unicast_send_play_list_multicast (int number_of_channels, mumudvb_channel_t *cha
 			else
 				strcpy(urlheader,"udp");
 
-			unicast_reply_write(reply, "#EXTINF:0,%s\r\n%s://%s%s:%d\r\n",
-					channels[curr_channel].name,
+			unicast_reply_write_channel_extinf(reply, &channels[curr_channel]);
+			unicast_reply_write(reply, "%s://%s%s:%d\r\n",
 					urlheader,
 					vlcchar,
 					channels[curr_channel].ip4Out,
