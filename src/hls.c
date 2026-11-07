@@ -124,7 +124,7 @@ int hls_entry_find(int service_id, hls_open_fds_t *hls_fds)
 
 	entry_found:
         return entry;
-};
+}
 
 int hls_entry_initialize(mumudvb_channel_t *actual_channel, hls_open_fds_t *hls_entry, unicast_parameters_t *unicast_vars, unsigned int access_time)
 {
@@ -317,7 +317,7 @@ int hls_playlist_master(hls_open_fds_t *hls_fds, unicast_parameters_t *unicast_v
 	}
 
         return 0;
-};
+}
 
 void hls_cleanup_files(hls_open_fds_t *hls_entry)
 {

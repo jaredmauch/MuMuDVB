@@ -1086,10 +1086,6 @@ int main (int argc, char **argv)
 
 	if(stats_infos.show_traffic)
 		log_message( log_module, MSG_INFO,"The traffic will be shown every %d second%c\n",stats_infos.show_traffic_interval, stats_infos.show_traffic_interval > 1? 's':' ');
-
-
-
-	printf("%s %p\n", __func__,  &chan_p);
 	/******************************************************/
 	// Monitor Thread
 	/******************************************************/
