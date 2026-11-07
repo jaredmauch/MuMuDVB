@@ -171,6 +171,15 @@ If needed, specify the modulation using the option `modulation`.
 [NOTE]
 8VSB is the default modulation for most of the terrestrial ATSC transmission
 
+[width="80%",cols="2,6,1,5",options="header"]
+|==================================================================================================================
+|Parameter name |Description | Default value |Comments
+|atsc_psip_eit |Parse the ATSC Master Guide Table (MGT) and forward PSIP EIT/ETT PIDs in every channel stream | 1 | 0 or 1. The base PSIP PID (8187) with TVCT/CVCT/MGT/STT is always forwarded on ATSC. When enabled, Event Information Tables and Extended Text Tables listed in the MGT are also demuxed and sent so clients can show program titles. Set to 0 to disable.
+|==================================================================================================================
+
+[NOTE]
+ATSC channel/call-sign names come from TVCT/CVCT on PID 8187. Titles of the program currently airing come from PSIP EIT (and optional ETT text) on PIDs advertised by the MGT — not from DVB `sort_eit` / PID 18.
+
 
 [[other_global]]
 Other global parameters

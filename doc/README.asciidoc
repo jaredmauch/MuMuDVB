@@ -63,6 +63,7 @@ Features overview
 - Support for HTTP unicast see <<unicast,http unicast>> section
 - Support for RTP headers (only for multicast)
 - Support for HLS file output
+- ATSC PSIP: forward TVCT/CVCT on the base PSIP PID and (by default) parse the MGT to forward EIT/ETT PIDs so clients can show program titles (`atsc_psip_eit`, see README_CONF)
 - CAM menu access while streaming (using a web/AJAX interface - see WEBSERVICES.asciidoc and CAM_menu_interface.png for screenshot)
 - Software descrambling through oscam dvbapi and libdvbcsa
 - Flexible configuration mechanism using templates

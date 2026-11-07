@@ -151,6 +151,7 @@
 #include "rtp.h"
 #include "log.h"
 #include "hls.h"
+#include "atsc_psip.h"
 
 #if defined __UCLIBC__ || defined ANDROID
 #define program_invocation_short_name "mumudvb"
@@ -235,6 +236,10 @@ int main (int argc, char **argv)
 
 	pthread_mutex_init(&chan_p.lock,NULL);
 	chan_p.psi_tables_filtering=PSI_TABLES_FILTERING_NONE;
+
+	/* ATSC PSIP: discover and forward EIT/ETT PIDs from the MGT */
+	atsc_psip_t atsc_psip;
+	atsc_psip_init(&atsc_psip);
 
 	//sap announces variables
 	sap_p_t sap_p;
@@ -510,6 +515,11 @@ int main (int argc, char **argv)
 				exit(ERROR_CONF);
 		}
 		else if((iRet=read_multicast_configuration(&multi_p, c_chan, substring))) //Read the line concerning the multicast parameters
+		{
+			if(iRet==-1)
+				exit(ERROR_CONF);
+		}
+		else if((iRet=atsc_psip_read_configuration(&atsc_psip, substring))) // ATSC PSIP EIT/ETT forwarding
 		{
 			if(iRet==-1)
 				exit(ERROR_CONF);
@@ -1235,7 +1245,12 @@ int main (int argc, char **argv)
 	//PSIP : Program and System Information Protocol
 	//Specific to ATSC, this is more or less the equivalent of sdt plus other stuff
 	if(tune_p.fe_type==FE_ATSC)
+	{
 		chan_p.asked_pid[PSIP_PID]=PID_ASKED;
+		if(atsc_psip.enabled)
+			log_message(log_module, MSG_INFO,
+					"ATSC: will parse MGT to forward PSIP EIT/ETT PIDs (disable with atsc_psip_eit=0)\n");
+	}
 
 	/*****************************************************/
 	//Set the filters
@@ -1621,6 +1636,23 @@ int main (int argc, char **argv)
 			/******************************************************/
 
 			/******************************************************/
+			// ATSC PSIP MGT: discover EIT/ETT PIDs to forward
+			/******************************************************/
+			if(!ScramblingControl &&
+					(pid == PSIP_PID) &&
+					(tune_p.fe_type == FE_ATSC) &&
+					atsc_psip.enabled)
+			{
+				iRet = atsc_psip_new_packet(&atsc_psip, actual_ts_packet, &chan_p, &fds,
+						tune_p.card_dev_path, tune_p.tuner);
+				if(iRet)
+				{
+					log_message(log_module, MSG_ERROR, "ATSC PSIP error %d", iRet);
+					set_interrupted(ERROR_MEMORY<<8);
+				}
+			}
+
+			/******************************************************/
 			//Pat rewrite
 			/******************************************************/
 			if( (pid == 0) && //This is a PAT PID
@@ -1669,7 +1701,9 @@ int main (int argc, char **argv)
 				//If it's a mandatory PID we send it
 				if((pid<MAX_MANDATORY_PID_NUMBER) && (mandatory_pid[pid]==1))
 					send_packet=1;
-				if ((pid == PSIP_PID) && (tune_p.fe_type==FE_ATSC))
+				/* ATSC base PSIP (TVCT/CVCT/MGT/STT) and MGT-listed EIT/ETT PIDs */
+				if ((tune_p.fe_type==FE_ATSC) &&
+						((pid == PSIP_PID) || atsc_psip_is_extra_pid(&atsc_psip, pid)))
 					send_packet=1;
 
 
@@ -1809,6 +1843,7 @@ int main (int argc, char **argv)
 		log_message( log_module,  MSG_INFO,
 				"We have got %d overflow errors\n",card_buffer.overflow_number );
 	mumudvb_close_goto:
+	atsc_psip_free(&atsc_psip);
 	//If the thread is not started, we don't send the nonexistent address of monitor_thread_params
 	return mumudvb_close(no_daemon,
 			pthread_equal(monitorthread, pthread_self()) ? NULL:&monitor_thread_params,

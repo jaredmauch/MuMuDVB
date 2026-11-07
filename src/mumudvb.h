@@ -562,6 +562,8 @@ typedef struct mumu_chan_p_t{
 	//Asked pids //used for filtering
 	/** this array contains the pids we want to filter,*/
 	uint8_t asked_pid[8193];
+	/** PIDs that must stay open even if no channel lists them (ATSC PSIP EIT/ETT from MGT). */
+	uint8_t permanent_pid[8193];
 	/** The number of TS discontinuities per PID **/
 	int16_t continuity_counter_pid[8193]; //on 16 bits for storing the initial -1
 	uint8_t check_cc;
