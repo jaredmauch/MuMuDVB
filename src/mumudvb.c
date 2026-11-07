@@ -1580,6 +1580,9 @@ int main (int argc, char **argv)
 				(card_buffer.read_buff_pos+TS_PACKET_SIZE)<=card_buffer.bytes_read;
 				card_buffer.read_buff_pos+=TS_PACKET_SIZE)//we loop on the subpackets
 		{
+			if(get_interrupted())
+				break;
+
 			if (chan_p.t2mi_pid > 0) {
 			    actual_ts_packet=card_buffer.t2mi_buffer+card_buffer.read_buff_pos;
 			} else {
@@ -1636,8 +1639,11 @@ int main (int argc, char **argv)
 				iRet = autoconf_new_packet(pid, actual_ts_packet, &auto_p,  &fds, &chan_p, &tune_p, &multi_p, &unic_p, server_id, scam_vars_ptr);
 				if(iRet)
 				{
-					log_message( log_module,  MSG_ERROR, "Autoconf error %d", iRet);
+					/* Real errors are ERROR_* << 8; ignore any leftover signal values */
+					if(iRet >= (1<<8))
+						log_message( log_module,  MSG_ERROR, "Autoconf error %d", iRet>>8);
 					set_interrupted(iRet);
+					break;
 				}
 			}
 
@@ -1925,7 +1931,11 @@ static void SignalHandler (int signum)
 	}
 	else if (signum != SIGPIPE)
 	{
-		log_message( log_module,  MSG_ERROR, "Caught signal %d", signum);
+		/* SIGINT/SIGTERM are normal shutdown; other signals are unexpected */
+		if (signum == SIGINT || signum == SIGTERM)
+			log_message( log_module,  MSG_INFO, "Caught signal %d - closing cleanly", signum);
+		else
+			log_message( log_module,  MSG_ERROR, "Caught signal %d", signum);
 		set_interrupted(signum);
 	}
 	signal (signum, SignalHandler);

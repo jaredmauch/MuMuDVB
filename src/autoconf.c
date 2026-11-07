@@ -712,6 +712,10 @@ int autoconf_new_packet(int pid, unsigned char *ts_packet, auto_p_t *auto_p, fds
 	}
 	//TODO : put PMT information in the pid_i structure of the channel
 
-	return get_interrupted();
+	/* Only propagate real errors (ERROR_* << 8), not async signals (< 1<<8). */
+	{
+		int interrupted = get_interrupted();
+		return (interrupted >= (1<<8)) ? interrupted : 0;
+	}
 }
 
