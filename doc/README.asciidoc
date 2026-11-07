@@ -864,6 +864,8 @@ The EIT PID contains the description of the current program and the future progr
 
 To enable EIT sorting, add `sort_eit=1` to your config file. 
 
+On ATSC, the same option also sorts PSIP EIT/ETT: each channel only gets guide sections for its VCT `source_id` (so a unicast `/bysid/<sid>` client does not receive other services' program guide).
+
 [NOTE]
 If you don't use full autoconfiguration, EIT sorting needs the `service_id` option for each channel to specify the service id.
 

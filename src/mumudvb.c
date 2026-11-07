@@ -1252,9 +1252,14 @@ int main (int argc, char **argv)
 	if(tune_p.fe_type==FE_ATSC)
 	{
 		chan_p.asked_pid[PSIP_PID]=PID_ASKED;
+		/* sort_eit=1 also sorts ATSC EIT/ETT by channel source_id */
+		if(rewrite_vars.rewrite_eit == OPTION_ON)
+			atsc_psip.sort_guide = 1;
 		if(atsc_psip.enabled)
 			log_message(log_module, MSG_INFO,
-					"ATSC: will parse MGT to forward PSIP EIT/ETT PIDs (disable with atsc_psip_eit=0)\n");
+					"ATSC: will parse MGT to forward PSIP EIT/ETT PIDs (disable with atsc_psip_eit=0)%s\n",
+					atsc_psip.sort_guide ?
+					"; sort_eit=1 so each channel only gets its own guide sections" : "");
 	}
 
 	/*****************************************************/
@@ -1706,9 +1711,11 @@ int main (int argc, char **argv)
 				//If it's a mandatory PID we send it
 				if((pid<MAX_MANDATORY_PID_NUMBER) && (mandatory_pid[pid]==1))
 					send_packet=1;
-				/* ATSC base PSIP (TVCT/CVCT/MGT/STT) and MGT-listed EIT/ETT PIDs */
-				if ((tune_p.fe_type==FE_ATSC) &&
-						((pid == PSIP_PID) || atsc_psip_is_extra_pid(&atsc_psip, pid)))
+				/* ATSC base PSIP (TVCT/CVCT/MGT/STT) always; EIT/ETT raw only if not sorting */
+				if ((tune_p.fe_type==FE_ATSC) && (pid == PSIP_PID))
+					send_packet=1;
+				else if ((tune_p.fe_type==FE_ATSC) && atsc_psip_is_extra_pid(&atsc_psip, pid) &&
+						!atsc_psip.sort_guide)
 					send_packet=1;
 
 
@@ -1781,7 +1788,7 @@ int main (int argc, char **argv)
 					send_packet=sdt_rewrite_new_channel_packet(actual_ts_packet, &rewrite_vars, &chan_p.channels[ichan], ichan);
 
 				/******************************************************/
-				//Rewrite EIT
+				//Rewrite EIT (DVB PID 18)
 				/******************************************************/
 				if((send_packet==1) &&//no need to check packets we don't send
 						(pid == 18) && //This is a EIT PID
@@ -1791,6 +1798,18 @@ int main (int argc, char **argv)
 					eit_rewrite_new_channel_packet(actual_ts_packet, &rewrite_vars, &chan_p.channels[ichan],
 							&unic_p, scam_vars_ptr);
 					send_packet=0; //for EIT it is sent by the rewrite function itself
+				}
+
+				/******************************************************/
+				//ATSC EIT/ETT guide sorting (per channel source_id)
+				/******************************************************/
+				if (atsc_psip.sort_guide &&
+						(tune_p.fe_type == FE_ATSC) &&
+						atsc_psip_is_extra_pid(&atsc_psip, pid))
+				{
+					atsc_psip_emit_guide_for_channel(&atsc_psip, &chan_p.channels[ichan],
+							pid, actual_ts_packet, &unic_p, scam_vars_ptr);
+					send_packet=0; /* emitted above when source_id matches */
 				}
 
 				/******************************************************/
