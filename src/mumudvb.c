@@ -1801,15 +1801,15 @@ int main (int argc, char **argv)
 				}
 
 				/******************************************************/
-				//ATSC EIT/ETT guide sorting (per channel source_id)
+				//ATSC EIT/ETT guide filter (per channel source_id)
+				// Forward original TS packets only for matching sections.
 				/******************************************************/
 				if (atsc_psip.sort_guide &&
 						(tune_p.fe_type == FE_ATSC) &&
 						atsc_psip_is_extra_pid(&atsc_psip, pid))
 				{
-					atsc_psip_emit_guide_for_channel(&atsc_psip, &chan_p.channels[ichan],
-							pid, actual_ts_packet, &unic_p, scam_vars_ptr);
-					send_packet=0; /* emitted above when source_id matches */
+					send_packet = atsc_psip_should_forward_guide_packet(&atsc_psip,
+							&chan_p.channels[ichan], pid, actual_ts_packet);
 				}
 
 				/******************************************************/

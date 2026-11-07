@@ -80,9 +80,6 @@ void atsc_psip_init(atsc_psip_t *psip)
 	memset(psip, 0, sizeof(*psip));
 	psip->enabled = 1;
 	psip->mgt_version = -1;
-	psip->guide_store = calloc(MAX_ATSC_GUIDE_SECTIONS, sizeof(*psip->guide_store));
-	if (!psip->guide_store)
-		log_message(log_module, MSG_ERROR, "calloc failed for ATSC guide store\n");
 }
 
 void atsc_psip_free(atsc_psip_t *psip)
@@ -96,97 +93,6 @@ void atsc_psip_free(atsc_psip_t *psip)
 			free(psip->extra_assemblers[i]);
 			psip->extra_assemblers[i] = NULL;
 		}
-	}
-	if (psip->guide_store)
-	{
-		free(psip->guide_store);
-		psip->guide_store = NULL;
-	}
-}
-
-static int atsc_guide_section_source_id(const unsigned char *buf, int len)
-{
-	uint32_t etm_id;
-	if (!buf || len < 5)
-		return -1;
-	if (buf[0] == ATSC_TABLE_ID_EIT)
-		return (buf[3] << 8) | buf[4];
-	if (buf[0] == ATSC_TABLE_ID_ETT)
-	{
-		if (len < PSIP_HEADER_LEN + 4)
-			return -1;
-		etm_id = ((uint32_t)buf[PSIP_HEADER_LEN] << 24) |
-				((uint32_t)buf[PSIP_HEADER_LEN + 1] << 16) |
-				((uint32_t)buf[PSIP_HEADER_LEN + 2] << 8) |
-				(uint32_t)buf[PSIP_HEADER_LEN + 3];
-		return (int)((etm_id >> 16) & 0xffff);
-	}
-	return -1;
-}
-
-static void atsc_psip_store_guide_section(atsc_psip_t *psip, int pid,
-		unsigned char *buf, int len)
-{
-	int source_id;
-	int free_slot = -1;
-	int i;
-	uint8_t table_id;
-	uint8_t version;
-	uint8_t section_number;
-	uint8_t last_section_number;
-
-	if (!psip || !psip->sort_guide || !psip->guide_store || !buf)
-		return;
-	if (len < 8 || len > MAX_TS_SIZE)
-		return;
-	table_id = buf[0];
-	if (table_id != ATSC_TABLE_ID_EIT && table_id != ATSC_TABLE_ID_ETT)
-		return;
-	source_id = atsc_guide_section_source_id(buf, len);
-	if (source_id <= 0)
-		return;
-
-	version = (buf[5] >> 1) & 0x1f;
-	section_number = buf[6];
-	last_section_number = buf[7];
-
-	for (i = 0; i < MAX_ATSC_GUIDE_SECTIONS; i++)
-	{
-		atsc_guide_section_t *slot = &psip->guide_store[i];
-		if (!slot->in_use)
-		{
-			if (free_slot < 0)
-				free_slot = i;
-			continue;
-		}
-		if (slot->source_id == source_id && slot->pid == pid &&
-				slot->table_id == table_id && slot->section_number == section_number)
-		{
-			slot->version = version;
-			slot->last_section_number = last_section_number;
-			slot->len = len;
-			memcpy(slot->data, buf, (size_t)len);
-			return;
-		}
-	}
-	if (free_slot < 0)
-	{
-		log_message(log_module, MSG_DETAIL,
-				"ATSC guide store full, dropping section source_id=%d pid=%d\n",
-				source_id, pid);
-		return;
-	}
-	{
-		atsc_guide_section_t *slot = &psip->guide_store[free_slot];
-		slot->in_use = 1;
-		slot->source_id = source_id;
-		slot->pid = pid;
-		slot->table_id = table_id;
-		slot->version = version;
-		slot->section_number = section_number;
-		slot->last_section_number = last_section_number;
-		slot->len = len;
-		memcpy(slot->data, buf, (size_t)len);
 	}
 }
 
@@ -204,13 +110,102 @@ static mumudvb_ts_packet_t **atsc_psip_assembler_for_pid(atsc_psip_t *psip, int 
 static void atsc_psip_handle_guide_section(atsc_psip_t *psip, int pid,
 		unsigned char *buf, int len, mumu_chan_p_t *chan_p)
 {
+	(void)pid;
 	if (!buf || len < 1)
 		return;
 	if (buf[0] == ATSC_TABLE_ID_EIT)
 		atsc_psip_parse_eit(psip, buf, len, chan_p);
 	else if (buf[0] == ATSC_TABLE_ID_ETT)
 		atsc_psip_parse_ett(psip, buf, len, chan_p);
-	atsc_psip_store_guide_section(psip, pid, buf, len);
+}
+
+/** Payload offset of a TS packet (after adaptation), or -1 if no payload. */
+static int atsc_psip_payload_offset(const unsigned char *ts)
+{
+	int afc;
+	int off = 4;
+
+	if (!ts || ts[0] != 0x47)
+		return -1;
+	afc = (ts[3] >> 4) & 0x3;
+	if (afc == 0 || afc == 2) /* reserved or adaptation only */
+		return -1;
+	if (afc == 3) /* adaptation + payload */
+	{
+		int alen = ts[4];
+		off = 5 + alen;
+	}
+	if (off >= TS_PACKET_SIZE)
+		return -1;
+	return off;
+}
+
+/**
+ * Peek the ATSC source_id from a PUSI TS packet that begins an EIT/ETT section.
+ * Returns source_id > 0 on success, -1 if it cannot be determined from this packet.
+ */
+static int atsc_psip_peek_section_source_id(const unsigned char *ts)
+{
+	int off;
+	int pointer;
+	int sec;
+	uint8_t table_id;
+
+	if (!(ts[1] & 0x40)) /* PUSI */
+		return -1;
+	off = atsc_psip_payload_offset(ts);
+	if (off < 0 || off >= TS_PACKET_SIZE)
+		return -1;
+	pointer = ts[off];
+	sec = off + 1 + pointer;
+	if (sec + 5 >= TS_PACKET_SIZE)
+		return -1;
+	table_id = ts[sec];
+	if (table_id == ATSC_TABLE_ID_EIT)
+		return (ts[sec + 3] << 8) | ts[sec + 4];
+	if (table_id == ATSC_TABLE_ID_ETT)
+	{
+		/* ETM_id follows the 9-byte PSIP header; source_id is its top 16 bits */
+		if (sec + PSIP_HEADER_LEN + 2 >= TS_PACKET_SIZE)
+			return -1;
+		return (ts[sec + PSIP_HEADER_LEN] << 8) | ts[sec + PSIP_HEADER_LEN + 1];
+	}
+	return -1;
+}
+
+int atsc_psip_should_forward_guide_packet(atsc_psip_t *psip, mumudvb_channel_t *channel,
+		int pid, unsigned char *ts_packet)
+{
+	int source_id;
+	int match;
+
+	if (!psip || !psip->sort_guide || !channel || !ts_packet)
+		return 0;
+
+	/* Until VCT maps source_id, keep full guide so clients are not left empty */
+	if (channel->atsc_source_id <= 0)
+		return 1;
+
+	if (ts_packet[1] & 0x40) /* PUSI: new section decision */
+	{
+		source_id = atsc_psip_peek_section_source_id(ts_packet);
+		if (source_id <= 0)
+		{
+			/* Cannot classify — do not forward (avoid leaking other SIDs) */
+			channel->atsc_guide_filter_pid = pid;
+			channel->atsc_guide_filter_match = 0;
+			return 0;
+		}
+		match = (source_id == channel->atsc_source_id) ? 1 : 0;
+		channel->atsc_guide_filter_pid = pid;
+		channel->atsc_guide_filter_match = match;
+		return match;
+	}
+
+	/* Continuation of the section decided on the last PUSI for this PID */
+	if (channel->atsc_guide_filter_pid == pid && channel->atsc_guide_filter_match)
+		return 1;
+	return 0;
 }
 
 int atsc_psip_read_configuration(atsc_psip_t *psip, char *substring)
@@ -786,7 +781,7 @@ static int atsc_psip_parse_mgt(atsc_psip_t *psip, unsigned char *buf, int len,
 		log_message(log_module, MSG_INFO,
 				"Forwarding %d ATSC PSIP EIT/ETT PID(s) (EIT-0=%d ETT-0=%d channel-ETT=%d)%s\n",
 				psip->num_extra_pids, psip->eit0_pid, psip->ett0_pid, psip->channel_ett_pid,
-				psip->sort_guide ? " [sorted per channel source_id]" : "");
+				psip->sort_guide ? " [filter per channel source_id]" : "");
 		update_chan_filters(chan_p, card_base_path, tuner, fds);
 	}
 	return 1;
@@ -848,87 +843,4 @@ int atsc_psip_new_packet(atsc_psip_t *psip, int pid, unsigned char *ts_packet,
 				(*assembler)->data_full, (*assembler)->len_full, chan_p);
 	}
 	return 0;
-}
-
-void atsc_psip_emit_guide_for_channel(atsc_psip_t *psip, mumudvb_channel_t *channel,
-		int pid, unsigned char *ts_packet,
-		struct unicast_parameters_t *unicast_vars, void *scam_vars_v)
-{
-	ts_header_t *ts_header;
-	int matches[MAX_ATSC_GUIDE_SECTIONS];
-	int n = 0;
-	int i;
-	int pick;
-	atsc_guide_section_t *sec;
-	unsigned char send_buf[TS_PACKET_SIZE];
-	int data_left_to_send;
-	int sent;
-	int source_id;
-
-	if (!psip || !psip->sort_guide || !psip->guide_store || !channel || !ts_packet)
-		return;
-	if (channel->channel_ready < READY)
-		return;
-
-	source_id = channel->atsc_source_id;
-	if (source_id <= 0)
-		return;
-
-	ts_header = (ts_header_t *)ts_packet;
-	/* Pace emit like DVB EIT rewrite: only when a section starts on this PID */
-	if (!ts_header->payload_unit_start_indicator)
-		return;
-
-	for (i = 0; i < MAX_ATSC_GUIDE_SECTIONS; i++)
-	{
-		if (psip->guide_store[i].in_use &&
-				psip->guide_store[i].source_id == source_id &&
-				psip->guide_store[i].pid == pid)
-			matches[n++] = i;
-	}
-	if (n == 0)
-		return;
-
-	pick = channel->eit_section_to_send % n;
-	channel->eit_section_to_send = (pick + 1) % n;
-	sec = &psip->guide_store[matches[pick]];
-
-	data_left_to_send = sec->len;
-	sent = 0;
-	while (data_left_to_send > 0)
-	{
-		int header_len;
-		memset(send_buf, 0, sizeof(send_buf));
-		ts_header = (ts_header_t *)send_buf;
-		ts_header->sync_byte = 0x47;
-		if (sent == 0)
-		{
-			ts_header->payload_unit_start_indicator = 1;
-			header_len = TS_HEADER_LEN; /* includes pointer field */
-		}
-		else
-			header_len = TS_HEADER_LEN - 1;
-		ts_header->pid_hi = (pid >> 8) & 0x1f;
-		ts_header->pid_lo = pid & 0xff;
-		ts_header->adaptation_field_control = 1;
-		ts_header->continuity_counter = channel->eit_cc & 0x0f;
-		channel->eit_cc = (channel->eit_cc + 1) % 16;
-
-		if (data_left_to_send >= (TS_PACKET_SIZE - header_len))
-		{
-			memcpy(send_buf + header_len, sec->data + sent,
-					(size_t)(TS_PACKET_SIZE - header_len));
-			sent += (TS_PACKET_SIZE - header_len);
-			data_left_to_send -= (TS_PACKET_SIZE - header_len);
-		}
-		else
-		{
-			memcpy(send_buf + header_len, sec->data + sent, (size_t)data_left_to_send);
-			sent += data_left_to_send;
-			memset(send_buf + header_len + data_left_to_send, 0xFF,
-					(size_t)(TS_PACKET_SIZE - (header_len + data_left_to_send)));
-			data_left_to_send = 0;
-		}
-		buffer_func(channel, send_buf, unicast_vars, scam_vars_v);
-	}
 }
