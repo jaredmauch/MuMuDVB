@@ -80,6 +80,7 @@ void atsc_psip_init(atsc_psip_t *psip)
 	memset(psip, 0, sizeof(*psip));
 	psip->enabled = 1;
 	psip->mgt_version = -1;
+	psip->gps_utc_offset = GPS_LEAP_SECONDS_DEFAULT;
 }
 
 void atsc_psip_free(atsc_psip_t *psip)
@@ -110,11 +111,15 @@ static mumudvb_ts_packet_t **atsc_psip_assembler_for_pid(atsc_psip_t *psip, int 
 static void atsc_psip_handle_guide_section(atsc_psip_t *psip, int pid,
 		unsigned char *buf, int len, mumu_chan_p_t *chan_p)
 {
-	(void)pid;
 	if (!buf || len < 1)
 		return;
 	if (buf[0] == ATSC_TABLE_ID_EIT)
+	{
+		/* Prefer EIT-0 (current 3 hours) when MGT has told us its PID. */
+		if (psip->eit0_pid && pid != psip->eit0_pid)
+			return;
 		atsc_psip_parse_eit(psip, buf, len, chan_p);
+	}
 	else if (buf[0] == ATSC_TABLE_ID_ETT)
 		atsc_psip_parse_ett(psip, buf, len, chan_p);
 }
@@ -306,12 +311,17 @@ static mumudvb_channel_t *atsc_psip_find_channel_by_source(mumu_chan_p_t *chan_p
 
 static uint32_t atsc_psip_now_gps(const atsc_psip_t *psip)
 {
-	if (psip->have_gps_time)
-		return psip->gps_time;
 	time_t now = time(NULL);
+	if (psip->have_gps_time)
+	{
+		/* Extrapolate from last STT sample using host wall clock. */
+		if (psip->gps_time_wall > 0 && now > psip->gps_time_wall)
+			return psip->gps_time + (uint32_t)(now - psip->gps_time_wall);
+		return psip->gps_time;
+	}
 	if (now < GPS_UNIX_EPOCH_DIFF)
 		return 0;
-	return (uint32_t)(now - GPS_UNIX_EPOCH_DIFF + GPS_LEAP_SECONDS_DEFAULT);
+	return (uint32_t)(now - GPS_UNIX_EPOCH_DIFF + psip->gps_utc_offset);
 }
 
 /** Decode ATSC multiple_string_structure into UTF-8/Latin-1 text. */
@@ -362,14 +372,19 @@ static int atsc_decode_multiple_string(const unsigned char *buf, int len, char *
 #ifdef HAVE_LIBUCSI
 			if (compression_type != 0x00)
 			{
+				/* libucsi returns 0 on success; decoded length is in destbufpos. */
 				uint8_t *dest8 = decoded + decoded_len;
 				size_t destbufsize = sizeof(decoded) - (size_t)decoded_len - 1;
 				size_t destbufpos = 0;
 				int n = atsc_text_segment_decode(
 						(struct atsc_text_string_segment *)(buf + pos - 3),
 						&dest8, &destbufsize, &destbufpos);
-				if (n > 0 && decoded_len + n < (int)sizeof(decoded))
-					decoded_len += n;
+				if (n != -1 && destbufpos > 0)
+				{
+					if (decoded_len + (int)destbufpos >= (int)sizeof(decoded))
+						destbufpos = sizeof(decoded) - (size_t)decoded_len - 1;
+					decoded_len += (int)destbufpos;
+				}
 				pos += number_bytes;
 				continue;
 			}
@@ -427,16 +442,22 @@ static int atsc_decode_multiple_string(const unsigned char *buf, int len, char *
 	return best_pos > 0 ? 0 : -1;
 }
 
-static void atsc_psip_set_title(mumudvb_channel_t *chan, int event_id, const char *title)
+static void atsc_psip_set_title(mumudvb_channel_t *chan, int event_id,
+		const char *title, uint32_t event_end_gps)
 {
 	int changed = 0;
 	if (!chan || !title)
 		return;
 	if (chan->atsc_event_id != event_id)
+	{
 		changed = 1;
+		/* Drop previous event's ETT text until a matching ETT arrives. */
+		chan->atsc_program_description[0] = '\0';
+	}
 	if (strncmp(chan->atsc_program_title, title, MAX_NAME_LEN) != 0)
 		changed = 1;
 	chan->atsc_event_id = event_id;
+	chan->atsc_event_end_gps = event_end_gps;
 	{
 		size_t n = strnlen(title, sizeof(chan->atsc_program_title) - 1);
 		memcpy(chan->atsc_program_title, title, n);
@@ -488,10 +509,11 @@ static void atsc_psip_parse_stt(atsc_psip_t *psip, unsigned char *buf, int len)
 			(uint32_t)buf[PSIP_HEADER_LEN + 3];
 	gps_utc_offset = buf[PSIP_HEADER_LEN + 4];
 	psip->gps_time = system_time;
+	psip->gps_utc_offset = gps_utc_offset;
+	psip->gps_time_wall = time(NULL);
 	psip->have_gps_time = 1;
 	log_message(log_module, MSG_DEBUG,
 			"STT GPS time %u (UTC offset %u)\n", system_time, gps_utc_offset);
-	(void)gps_utc_offset;
 }
 
 /** Parse one EIT-0 section and update matching channel's current title. */
@@ -537,61 +559,89 @@ static void atsc_psip_parse_eit(atsc_psip_t *psip, unsigned char *buf, int len, 
 	num_events = buf[delta++];
 	now_gps = atsc_psip_now_gps(psip);
 
-	for (j = 0; j < num_events && delta + 10 <= end_limit; j++)
 	{
-		int event_id;
-		uint32_t start_time;
-		uint32_t length_in_seconds;
-		int title_length;
-		int descriptors_length;
-		char title[MAX_NAME_LEN];
+		int found_covering = 0;
+		uint32_t best_end = 0;
 
-		event_id = ((buf[delta] & 0x3f) << 8) | buf[delta + 1];
-		delta += 2;
-		start_time = ((uint32_t)buf[delta] << 24) | ((uint32_t)buf[delta + 1] << 16) |
-				((uint32_t)buf[delta + 2] << 8) | (uint32_t)buf[delta + 3];
-		delta += 4;
-		/* reserved(2) + ETM_location(2) + length_in_seconds(20) */
-		length_in_seconds = ((uint32_t)(buf[delta] & 0x0f) << 16) |
-				((uint32_t)buf[delta + 1] << 8) | (uint32_t)buf[delta + 2];
-		delta += 3;
-		title_length = buf[delta++];
-		if (delta + title_length > end_limit)
-			return;
-
-		title[0] = '\0';
-		if (title_length > 0)
-			atsc_decode_multiple_string(buf + delta, title_length, title, sizeof(title));
-		delta += title_length;
-
-		if (delta + 2 > end_limit)
-			return;
-		descriptors_length = ((buf[delta] & 0x0f) << 8) | buf[delta + 1];
-		delta += 2;
-		if (delta + descriptors_length > end_limit)
-			return;
-		delta += descriptors_length;
-
-		/* Prefer event covering "now"; else latest start_time so far in EIT-0 */
-		if (now_gps && start_time <= now_gps && (start_time + length_in_seconds) > now_gps)
+		for (j = 0; j < num_events && delta + 10 <= end_limit; j++)
 		{
-			best_event_id = event_id;
-			best_start = start_time;
-			memcpy(best_title, title, strnlen(title, sizeof(best_title) - 1) + 1);
-			break; /* current event found */
+			int event_id;
+			uint32_t start_time;
+			uint32_t length_in_seconds;
+			int title_length;
+			int descriptors_length;
+			char title[MAX_NAME_LEN];
+			int covers_now;
+
+			event_id = ((buf[delta] & 0x3f) << 8) | buf[delta + 1];
+			delta += 2;
+			start_time = ((uint32_t)buf[delta] << 24) | ((uint32_t)buf[delta + 1] << 16) |
+					((uint32_t)buf[delta + 2] << 8) | (uint32_t)buf[delta + 3];
+			delta += 4;
+			/* reserved(2) + ETM_location(2) + length_in_seconds(20) */
+			length_in_seconds = ((uint32_t)(buf[delta] & 0x0f) << 16) |
+					((uint32_t)buf[delta + 1] << 8) | (uint32_t)buf[delta + 2];
+			delta += 3;
+			title_length = buf[delta++];
+			if (delta + title_length > end_limit)
+				return;
+
+			title[0] = '\0';
+			if (title_length > 0)
+				atsc_decode_multiple_string(buf + delta, title_length, title, sizeof(title));
+			delta += title_length;
+
+			if (delta + 2 > end_limit)
+				return;
+			descriptors_length = ((buf[delta] & 0x0f) << 8) | buf[delta + 1];
+			delta += 2;
+			if (delta + descriptors_length > end_limit)
+				return;
+			delta += descriptors_length;
+
+			/* Avoid uint32 wrap on start + length */
+			covers_now = (now_gps && start_time <= now_gps && length_in_seconds > 0 &&
+					(now_gps - start_time) < length_in_seconds);
+
+			if (covers_now)
+			{
+				best_event_id = event_id;
+				best_start = start_time;
+				best_end = start_time + length_in_seconds;
+				{
+					size_t n = strnlen(title, sizeof(best_title) - 1);
+					memcpy(best_title, title, n);
+					best_title[n] = '\0';
+				}
+				found_covering = 1;
+				break; /* current event found */
+			}
+			/* Fallback only for bootstrap / expired prior event — never overwrite
+			 * a still-valid current title from another EIT section. */
+			if (!found_covering && title[0] &&
+					(!now_gps || start_time <= now_gps) && start_time >= best_start)
+			{
+				int allow_fallback = (chan->atsc_event_id < 0) ||
+						(chan->atsc_event_end_gps && now_gps &&
+						 now_gps >= chan->atsc_event_end_gps);
+				if (allow_fallback)
+				{
+					best_event_id = event_id;
+					best_start = start_time;
+					best_end = length_in_seconds ? (start_time + length_in_seconds) : 0;
+					{
+						size_t n = strnlen(title, sizeof(best_title) - 1);
+						memcpy(best_title, title, n);
+						best_title[n] = '\0';
+					}
+				}
+			}
 		}
-		if ((!now_gps || start_time <= now_gps) && start_time >= best_start && title[0])
-		{
-			best_event_id = event_id;
-			best_start = start_time;
-			memcpy(best_title, title, strnlen(title, sizeof(best_title) - 1) + 1);
-		}
+
+		if (best_event_id >= 0)
+			atsc_psip_set_title(chan, best_event_id,
+					best_title[0] ? best_title : "(no title)", best_end);
 	}
-
-	if (best_event_id >= 0 && best_title[0])
-		atsc_psip_set_title(chan, best_event_id, best_title);
-	else if (best_event_id >= 0)
-		atsc_psip_set_title(chan, best_event_id, "(no title)");
 }
 
 /** Parse one ETT section; attach text to the matching channel/event. */
@@ -693,54 +743,72 @@ static int atsc_psip_parse_mgt(atsc_psip_t *psip, unsigned char *buf, int len,
 			"MGT version %d, tables_defined=%d (was version %d, %d extra PIDs)\n",
 			version, tables_defined, psip->mgt_version, psip->num_extra_pids);
 
-	for (i = 0; i < tables_defined; i++)
 	{
-		uint16_t table_type;
-		uint16_t table_type_pid;
-		uint16_t desc_len;
+		int truncated = 0;
 		int end_limit = 3 + section_length - 4;
 
-		if (delta + 11 > end_limit)
-			break;
-
-		table_type = (buf[delta] << 8) | buf[delta + 1];
-		delta += 2;
-		table_type_pid = ((buf[delta] & 0x1f) << 8) | buf[delta + 1];
-		delta += 2;
-		delta += 1; /* version */
-		delta += 4; /* number_bytes */
-		desc_len = ((buf[delta] & 0x0f) << 8) | buf[delta + 1];
-		delta += 2;
-		if (delta + desc_len > end_limit)
-			break;
-		delta += desc_len;
-
-		if (!atsc_psip_table_type_wanted(table_type))
-			continue;
-		if (table_type_pid == 0 || table_type_pid == PSIP_PID || table_type_pid >= 8191)
-			continue;
-
-		if (table_type == ATSC_TABLE_TYPE_EIT_FIRST)
-			new_eit0 = table_type_pid;
-		else if (table_type == ATSC_TABLE_TYPE_ETT_FIRST)
-			new_ett0 = table_type_pid;
-		else if (table_type == ATSC_TABLE_TYPE_CHANNEL_ETT)
-			new_channel_ett = table_type_pid;
-
-		if (new_count < MAX_ATSC_PSIP_EXTRA_PIDS)
+		for (i = 0; i < tables_defined; i++)
 		{
-			int j, listed = 0;
-			for (j = 0; j < new_count; j++)
+			uint16_t table_type;
+			uint16_t table_type_pid;
+			uint16_t desc_len;
+
+			if (delta + 11 > end_limit)
 			{
-				if (new_pids[j] == (int)table_type_pid) { listed = 1; break; }
+				truncated = 1;
+				break;
 			}
-			if (!listed)
+
+			table_type = (buf[delta] << 8) | buf[delta + 1];
+			delta += 2;
+			table_type_pid = ((buf[delta] & 0x1f) << 8) | buf[delta + 1];
+			delta += 2;
+			delta += 1; /* version */
+			delta += 4; /* number_bytes */
+			desc_len = ((buf[delta] & 0x0f) << 8) | buf[delta + 1];
+			delta += 2;
+			if (delta + desc_len > end_limit)
 			{
-				new_pids[new_count++] = table_type_pid;
-				log_message(log_module, MSG_DETAIL,
-						"MGT: table_type 0x%04x -> PID %d (EIT/ETT)\n",
-						table_type, table_type_pid);
+				truncated = 1;
+				break;
 			}
+			delta += desc_len;
+
+			if (!atsc_psip_table_type_wanted(table_type))
+				continue;
+			if (table_type_pid == 0 || table_type_pid == PSIP_PID || table_type_pid >= 8191)
+				continue;
+
+			if (table_type == ATSC_TABLE_TYPE_EIT_FIRST)
+				new_eit0 = table_type_pid;
+			else if (table_type == ATSC_TABLE_TYPE_ETT_FIRST)
+				new_ett0 = table_type_pid;
+			else if (table_type == ATSC_TABLE_TYPE_CHANNEL_ETT)
+				new_channel_ett = table_type_pid;
+
+			if (new_count < MAX_ATSC_PSIP_EXTRA_PIDS)
+			{
+				int j, listed = 0;
+				for (j = 0; j < new_count; j++)
+				{
+					if (new_pids[j] == (int)table_type_pid) { listed = 1; break; }
+				}
+				if (!listed)
+				{
+					new_pids[new_count++] = table_type_pid;
+					log_message(log_module, MSG_DETAIL,
+							"MGT: table_type 0x%04x -> PID %d (EIT/ETT)\n",
+							table_type, table_type_pid);
+				}
+			}
+		}
+
+		if (truncated)
+		{
+			log_message(log_module, MSG_DETAIL,
+					"MGT truncated after %d/%d tables; keeping previous PID list\n",
+					i, tables_defined);
+			return 0;
 		}
 	}
 

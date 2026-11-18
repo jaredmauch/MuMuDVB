@@ -354,6 +354,8 @@ typedef struct mumudvb_channel_t{
 	int atsc_source_id;
 	/** Current ATSC event_id from EIT-0, -1 if unknown */
 	int atsc_event_id;
+	/** GPS end time (start + length) of current ATSC event; 0 if unknown */
+	uint32_t atsc_event_end_gps;
 	/** Current program title from ATSC EIT-0 */
 	char atsc_program_title[MAX_NAME_LEN];
 	/** Extended description from ATSC event ETT (when present) */

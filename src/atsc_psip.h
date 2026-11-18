@@ -15,6 +15,8 @@
 #ifndef _ATSC_PSIP_H
 #define _ATSC_PSIP_H
 
+#include <time.h>
+
 #include "mumudvb.h"
 #include "ts.h"
 #include "dvb.h"
@@ -47,6 +49,10 @@ typedef struct atsc_psip_t {
 	int mgt_version;
 	/** GPS seconds from STT when available; 0 if unknown. */
 	uint32_t gps_time;
+	/** GPS_UTC_offset from last STT (leap seconds); used for host-time fallback. */
+	uint8_t gps_utc_offset;
+	/** Host time(NULL) when gps_time was last sampled (for extrapolation). */
+	time_t gps_time_wall;
 	int have_gps_time;
 	/** PID for EIT-0 (MGT table_type 0x0100), 0 if unknown. */
 	int eit0_pid;

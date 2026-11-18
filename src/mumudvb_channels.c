@@ -65,6 +65,7 @@ int mumu_init_chan(mumudvb_channel_t *chan)
 	chan->pmt_version=-1;
 	chan->atsc_source_id = -1;
 	chan->atsc_event_id = -1;
+	chan->atsc_event_end_gps = 0;
 	chan->atsc_program_title[0] = '\0';
 	chan->atsc_program_description[0] = '\0';
 	for (int i = 0; i < 8; i++)

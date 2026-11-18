@@ -65,7 +65,11 @@ void autoconf_psip_need_update(auto_p_t *auto_p, unsigned char *buf)
 {
 	psip_t       *psip=(psip_t*)(get_ts_begin(buf));
 	if(psip) //It's the beginning of a new packet
-		if(psip->version_number!=auto_p->psip_version && !auto_p->psip_all_sections_seen)
+	{
+		/* Only TVCT/CVCT drive channel-name updates (ignore MGT/STT on same PID). */
+		if(psip->table_id != 0xc8 && psip->table_id != 0xc9)
+			return;
+		if(psip->version_number!=auto_p->psip_version)
 		{
 			/*current_next_indicator – A 1-bit indicator, which when set to '1' indicates that the Program Association Table
         sent is currently applicable. When the bit is set to '0', it indicates that the table sent is not yet applicable
@@ -78,6 +82,13 @@ void autoconf_psip_need_update(auto_p_t *auto_p, unsigned char *buf)
 					auto_p->psip_version,psip->version_number);
 			auto_p->psip_need_update=1;
 		}
+		else if(auto_p->psip_all_sections_seen && auto_p->psip_need_update==1)
+		{
+			/* False alarm (e.g. CRC failed after we thought we needed an update). */
+			log_message( log_module, MSG_DEBUG,"PSIP Not needing update anymore (wrong CRC ?)");
+			auto_p->psip_need_update=0;
+		}
+	}
 }
 
 
