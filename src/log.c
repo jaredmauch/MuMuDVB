@@ -857,6 +857,8 @@ char *pid_type_to_str(int type)
 		return "Teletext";
 	case PID_EXTRA_SUBTITLE:
 		return "Subtitling";
+	case PID_EXTRA_SCTE35:
+		return "SCTE-35";
 	case PID_EXTRA_APPLICATION_SIGNALLING:
 		return "Application Signalling";
 	case PID_ECM:
