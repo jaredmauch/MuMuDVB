@@ -237,6 +237,10 @@ void autoconf_get_pmt_pids(auto_p_t *auto_p, mumudvb_ts_packet_t *pmt, int *pids
 			pid_type=PID_AUDIO_ATSC;
 			log_message( log_module,  MSG_DEBUG,"  Audio ATSC A/53B \tPID %d\n",pid);
 			break;
+		case 0x86: /* SCTE-35 splice information table (Digital Program Insertion) */
+			/* Not streamed by MuMuDVB; logged when a channel PMT is accepted. */
+			log_message( log_module,  MSG_DEBUG,"  SCTE-35 \tPID %d (not kept)\n",pid);
+			continue;
 		case 0x05: /* ITU-T Rec. H.222.0 | ISO/IEC 13818-1 private_sections */
 			// Digital Storage Medium Command and Control (DSM-CC) cf H.222.0 | ISO/IEC 13818-1 annex B
 			if(descr_section_len) //If we have an associated descriptor, we'll search information in it

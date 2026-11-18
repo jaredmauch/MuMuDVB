@@ -62,6 +62,7 @@ int mumu_init_chan(mumudvb_channel_t *chan)
 	chan->scrambled_channel = 0;
 	chan->generated_pat_version=-1;
 	chan->generated_sdt_version=-1;
+	chan->pmt_version=-1;
 	chan->atsc_source_id = -1;
 	chan->atsc_event_id = -1;
 	chan->atsc_program_title[0] = '\0';
@@ -140,6 +141,40 @@ void chan_pmt_need_update( mumudvb_channel_t *chan, unsigned char *buf)
 	}
 }
 
+/** @brief Log any SCTE-35 (stream_type 0x86) elementary streams listed in a PMT. */
+static void chan_log_scte35_in_pmt(mumudvb_channel_t *channel, mumudvb_ts_packet_t *pmt)
+{
+	pmt_t *header;
+	pmt_info_t *es;
+	int program_info_length;
+	int section_len;
+	int descr_section_len;
+	int i;
+	int pid;
+
+	if (!channel || !pmt || !pmt->data_full || pmt->len_full < PMT_LEN)
+		return;
+
+	header = (pmt_t *)pmt->data_full;
+	section_len = pmt->len_full;
+	program_info_length = HILO(header->program_info_length);
+
+	for (i = program_info_length + PMT_LEN; i <= section_len - (PMT_INFO_LEN + 4); i += descr_section_len + PMT_INFO_LEN)
+	{
+		es = (pmt_info_t *)(pmt->data_full + i);
+		descr_section_len = HILO(es->ES_info_length);
+		if (i + PMT_INFO_LEN + descr_section_len > section_len - 4)
+			break;
+		if (es->stream_type == 0x86)
+		{
+			pid = HILO(es->elementary_PID);
+			log_message(log_module, MSG_INFO,
+					"SCTE-35 cue stream (PMT stream_type 0x86) on channel \"%s\" SID %d elementary PID %d\n",
+					channel->name, channel->service_id, pid);
+		}
+	}
+}
+
 
 int chan_pmt_ok(mumudvb_channel_t *channel, mumudvb_ts_packet_t *pmt)
 {
@@ -172,6 +207,8 @@ int chan_pmt_ok(mumudvb_channel_t *channel, mumudvb_ts_packet_t *pmt)
 	}
 	else//We update the PMT version stored
 		channel->pmt_version=header->version_number;
+
+	chan_log_scte35_in_pmt(channel, pmt);
 
 	return 1;
 }
