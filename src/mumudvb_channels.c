@@ -152,7 +152,7 @@ static void chan_log_scte35_in_pmt(mumudvb_channel_t *channel, mumudvb_ts_packet
 	int i;
 	int pid;
 
-	if (!channel || !pmt || !pmt->data_full || pmt->len_full < PMT_LEN)
+	if (!channel || !pmt || pmt->len_full < PMT_LEN)
 		return;
 
 	header = (pmt_t *)pmt->data_full;
